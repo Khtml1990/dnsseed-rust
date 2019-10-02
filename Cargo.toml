@@ -19,6 +19,7 @@ num_cpus = "1"
 panic = "abort"
 
 [profile.release]
+debug = true
 lto = true
 codegen-units = 1
 panic = "abort"
