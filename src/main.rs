@@ -283,7 +283,7 @@ fn scan_net() {
 		let mut scan_nodes = store.get_next_scan_nodes();
 		printer.add_line(format!("Got {} addresses to scan", scan_nodes.len()), false);
 		if !scan_nodes.is_empty() {
-			let per_iter_time = Duration::from_millis(datastore::SECS_PER_SCAN_RESULTS / scan_nodes.len() as u64);
+			let per_iter_time = Duration::from_millis(datastore::SECS_PER_SCAN_RESULTS * 1000 / scan_nodes.len() as u64);
 			let mut iter_time = start_time;
 
 			for node in scan_nodes.drain(..) {

@@ -234,6 +234,7 @@ impl Store {
 		}
 
 		let nodes_future = File::open(store.clone() + "/nodes").and_then(|f| {
+			let start_time = Instant::now() - Duration::from_secs(60 * 60 * 24);
 			let mut res = nodes_uninitd!();
 			let l = BufReader::new(f).lines();
 			for line_res in l {
@@ -272,7 +273,7 @@ impl Store {
 						}
 					}
 				}
-				res.state_next_scan[node.state.to_num() as usize].push((Instant::now(), sockaddr));
+				res.state_next_scan[node.state.to_num() as usize].push((start_time, sockaddr));
 				res.nodes_to_state.insert(sockaddr, node);
 			}
 			future::ok(res)
