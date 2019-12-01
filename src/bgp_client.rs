@@ -22,8 +22,10 @@ use futures::sync::mpsc;
 use crate::printer::{Printer, Stat};
 use crate::timeout_stream::TimeoutStream;
 
+const PATH_SUFFIX_LEN: usize = 3;
 struct Route {
-	path: Vec<u32>,
+	path_suffix: [u32; PATH_SUFFIX_LEN],
+	path_len: u32,
 	pref: u32,
 	med: u32,
 }
@@ -180,20 +182,27 @@ impl BGPClient {
 
 		path_vecs.sort_unstable_by(|path_a, path_b| {
 			path_a.pref.cmp(&path_b.pref)
-				.then(path_b.path.len().cmp(&path_a.path.len()))
+				.then(path_b.path_len.cmp(&path_a.path_len))
 				.then(path_b.med.cmp(&path_a.med))
 		});
 
 		let primary_route = path_vecs.pop().unwrap();
-		'asn_candidates: for asn in primary_route.path.iter().rev() {
+		'asn_candidates: for asn in primary_route.path_suffix.iter().rev() {
+			if *asn == 0 { continue 'asn_candidates; }
 			for secondary_route in path_vecs.iter() {
-				if !secondary_route.path.contains(asn) {
+				if !secondary_route.path_suffix.contains(asn) {
 					continue 'asn_candidates;
 				}
 			}
 			return *asn;
 		}
-		*primary_route.path.last().unwrap_or(&0)
+
+		for asn in primary_route.path_suffix.iter().rev() {
+			if *asn != 0 {
+				return *asn;
+			}
+		}
+		0
 	}
 
 	pub fn disconnect(&self) {
@@ -215,15 +224,25 @@ impl BGPClient {
 			}
 		}
 		if let Some(mut aspath) = as4_path.or(as_path) {
-			let mut path = Vec::new();
+			let mut pathvec = Vec::new();
 			for seg in aspath.segments.drain(..) {
 				match seg {
-					Segment::AS_SEQUENCE(mut asn) => path.append(&mut asn),
+					Segment::AS_SEQUENCE(mut asn) => pathvec.append(&mut asn),
 					Segment::AS_SET(_) => {}, // Ignore sets for now, they're not that common anyway
 				}
 			}
+			let path_len = pathvec.len() as u32;
+			pathvec.dedup_by(|a, b| (*a).eq(b)); // Drop prepends, cause we don't care in this case
+
+			let mut path_suffix = [0; PATH_SUFFIX_LEN];
+			for (idx, asn) in pathvec.iter().rev().enumerate() {
+				path_suffix[PATH_SUFFIX_LEN - idx - 1] = *asn;
+				if idx == PATH_SUFFIX_LEN - 1 { break; }
+			}
+
 			return Some(Route {
-				path: path.clone(),
+				path_suffix,
+				path_len,
 				pref,
 				med,
 			})
