@@ -1,7 +1,7 @@
 use std::{cmp, mem};
 use std::collections::{HashSet, HashMap, hash_map};
 use std::sync::{Arc, RwLock};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::time::{Duration, Instant};
 use std::io::{BufRead, BufReader};
 
@@ -126,17 +126,60 @@ struct Node {
 	state: AddressState,
 }
 
+/// Essentially SocketAddr but without a traffic class or scope
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum SockAddr {
+	V4(SocketAddrV4),
+	V6((Ipv6Addr, u16)),
+}
+impl From<SocketAddr> for SockAddr {
+	fn from(addr: SocketAddr) -> SockAddr {
+		match addr {
+			SocketAddr::V4(sa) => SockAddr::V4(sa),
+			SocketAddr::V6(sa) => SockAddr::V6((sa.ip().clone(), sa.port())),
+		}
+	}
+}
+impl Into<SocketAddr> for &SockAddr {
+	fn into(self) -> SocketAddr {
+		match self {
+			&SockAddr::V4(sa) => SocketAddr::V4(sa),
+			&SockAddr::V6(sa) => SocketAddr::V6(SocketAddrV6::new(sa.0, sa.1, 0, 0))
+		}
+	}
+}
+impl ToString for SockAddr {
+	fn to_string(&self) -> String {
+		let sa: SocketAddr = self.into();
+		sa.to_string()
+	}
+}
+impl SockAddr {
+	pub fn port(&self) -> u16 {
+		match *self {
+			SockAddr::V4(sa) => sa.port(),
+			SockAddr::V6((_, port)) => port,
+		}
+	}
+	pub fn ip(&self) -> IpAddr {
+		match *self {
+			SockAddr::V4(sa) => IpAddr::V4(sa.ip().clone()),
+			SockAddr::V6((ip, _)) => IpAddr::V6(ip),
+		}
+	}
+}
+
 struct Nodes {
-	good_node_services: Vec<HashSet<SocketAddr>>,
-	nodes_to_state: HashMap<SocketAddr, Node>,
-	state_next_scan: Vec<Vec<(Instant, SocketAddr)>>,
+	good_node_services: Vec<HashSet<SockAddr>>,
+	nodes_to_state: HashMap<SockAddr, Node>,
+	state_next_scan: Vec<Vec<(Instant, SockAddr)>>,
 }
 struct NodesMutRef<'a> {
-	good_node_services: &'a mut Vec<HashSet<SocketAddr>>,
-	nodes_to_state: &'a mut HashMap<SocketAddr, Node>,
-	state_next_scan: &'a mut Vec<Vec<(Instant, SocketAddr)>>,
-
+	good_node_services: &'a mut Vec<HashSet<SockAddr>>,
+	nodes_to_state: &'a mut HashMap<SockAddr, Node>,
+	state_next_scan: &'a mut Vec<Vec<(Instant, SockAddr)>>,
 }
+
 impl Nodes {
 	fn borrow_mut<'a>(&'a mut self) -> NodesMutRef<'a> {
 		NodesMutRef {
@@ -269,12 +312,12 @@ impl Store {
 				if node.state == AddressState::Good {
 					for i in 0..64 {
 						if node.last_services & (1 << i) != 0 {
-							res.good_node_services[i].insert(sockaddr);
+							res.good_node_services[i].insert(sockaddr.into());
 						}
 					}
 				}
-				res.state_next_scan[node.state.to_num() as usize].push((start_time, sockaddr));
-				res.nodes_to_state.insert(sockaddr, node);
+				res.state_next_scan[node.state.to_num() as usize].push((start_time, sockaddr.into()));
+				res.nodes_to_state.insert(sockaddr.into(), node);
 			}
 			future::ok(res)
 		}).or_else(|_| -> future::FutureResult<Nodes, ()> {
@@ -315,7 +358,7 @@ impl Store {
 		let mut nodes = self.nodes.write().unwrap();
 		let cur_time = Instant::now();
 		for addr in addresses {
-			match nodes.nodes_to_state.entry(addr.clone()) {
+			match nodes.nodes_to_state.entry(addr.into()) {
 				hash_map::Entry::Vacant(e) => {
 					e.insert(Node {
 						state: AddressState::Untested,
@@ -323,7 +366,7 @@ impl Store {
 						last_update: cur_time,
 						last_good: cur_time,
 					});
-					nodes.state_next_scan[AddressState::Untested.to_num() as usize].push((cur_time, addr));
+					nodes.state_next_scan[AddressState::Untested.to_num() as usize].push((cur_time, addr.into()));
 					res += 1;
 				},
 				hash_map::Entry::Occupied(_) => {},
@@ -341,12 +384,14 @@ impl Store {
 		}));
 	}
 
-	pub fn set_node_state(&self, addr: SocketAddr, state: AddressState, services: u64) -> AddressState {
-		let mut nodes_lock = self.nodes.write().unwrap();
-		let nodes = nodes_lock.borrow_mut();
+	pub fn set_node_state(&self, sockaddr: SocketAddr, state: AddressState, services: u64) -> AddressState {
+		let addr: SockAddr = sockaddr.into();
 		let now = Instant::now();
 
-		let state_ref = nodes.nodes_to_state.entry(addr).or_insert(Node {
+		let mut nodes_lock = self.nodes.write().unwrap();
+		let nodes = nodes_lock.borrow_mut();
+
+		let state_ref = nodes.nodes_to_state.entry(addr.clone()).or_insert(Node {
 			state: AddressState::Untested,
 			last_services: 0,
 			last_update: now,
@@ -369,7 +414,7 @@ impl Store {
 			if state == AddressState::Good {
 				for i in 0..64 {
 					if services & (1 << i) != 0 && state_ref.last_services & (1 << i) == 0 {
-						nodes.good_node_services[i].insert(addr);
+						nodes.good_node_services[i].insert(addr.clone());
 					} else if services & (1 << i) == 0 && state_ref.last_services & (1 << i) != 0 {
 						nodes.good_node_services[i].remove(&addr);
 					}
@@ -541,7 +586,7 @@ impl Store {
 				let mut new_nodes = state_nodes.split_off(split_point as usize);
 				mem::swap(&mut new_nodes, state_nodes);
 				for (_, node) in new_nodes.drain(..) {
-					res.push(node);
+					res.push((&node).into());
 				}
 			}
 		}
