@@ -48,18 +48,15 @@ impl RoutingTable {
 		macro_rules! lookup_res {
 			($addrty: ty, $addr: expr, $table: expr, $addr_bits: expr) => { {
 				//TODO: Optimize this (probably means making the tables btrees)!
-				for i in (0..$addr_bits).rev() {
-					let mut lookup = $addr.octets();
-					for b in 0..(i / 8) {
-						lookup[lookup.len() - b - 1] = 0;
-					}
-					lookup[lookup.len() - (i/8) - 1] &= !(((1u16 << (i % 8)) - 1) as u8);
+				let mut lookup = $addr.octets();
+				for i in 0..$addr_bits {
 					let lookup_addr = <$addrty>::from(lookup);
 					if let Some(routes) = $table.get(&(lookup_addr, $addr_bits - i as u8)).map(|hm| hm.values()) {
 						if routes.len() > 0 {
 							return ($addr_bits - i as u8, routes.collect());
 						}
 					}
+					lookup[lookup.len() - (i/8) - 1] &= !(1u8 << (i % 8));
 				}
 				(0, vec![])
 			} }
