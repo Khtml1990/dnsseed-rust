@@ -124,6 +124,7 @@ struct Node {
 	last_good: Instant, // Ignored unless state is Good or WasGood
 	last_services: u64,
 	state: AddressState,
+	queued: bool,
 }
 
 /// Essentially SocketAddr but without a traffic class or scope
@@ -305,6 +306,7 @@ impl Store {
 					last_services,
 					last_update: Instant::now(),
 					last_good: Instant::now(),
+					queued: true,
 				};
 				if node.state == AddressState::Good {
 					for i in 0..64 {
@@ -362,6 +364,7 @@ impl Store {
 						last_services: 0,
 						last_update: cur_time,
 						last_good: cur_time,
+						queued: true,
 					});
 					nodes.state_next_scan[AddressState::Untested.to_num() as usize].push((cur_time, addr.into()));
 					res += 1;
@@ -393,6 +396,7 @@ impl Store {
 			last_services: 0,
 			last_update: now,
 			last_good: now,
+			queued: false,
 		});
 		let ret = state_ref.state;
 		if (state_ref.state == AddressState::Good || state_ref.state == AddressState::WasGood)
@@ -405,7 +409,10 @@ impl Store {
 				}
 			}
 			state_ref.last_services = 0;
-			nodes.state_next_scan[AddressState::WasGood.to_num() as usize].push((now, addr));
+			if !state_ref.queued {
+				nodes.state_next_scan[AddressState::WasGood.to_num() as usize].push((now, addr));
+				state_ref.queued = true;
+			}
 		} else {
 			state_ref.state = state;
 			if state == AddressState::Good {
@@ -419,7 +426,10 @@ impl Store {
 				state_ref.last_services = services;
 				state_ref.last_good = now;
 			}
-			nodes.state_next_scan[state.to_num() as usize].push((now, addr));
+			if !state_ref.queued {
+				nodes.state_next_scan[state.to_num() as usize].push((now, addr));
+				state_ref.queued = true;
+			}
 		}
 		state_ref.last_update = now;
 		ret
@@ -595,7 +605,8 @@ impl Store {
 		let cur_time = Instant::now();
 
 		{
-			let mut nodes = self.nodes.write().unwrap();
+			let mut nodes_lock = self.nodes.write().unwrap();
+			let nodes = nodes_lock.borrow_mut();
 			for (idx, state_nodes) in nodes.state_next_scan.iter_mut().enumerate() {
 				let rescan_interval = cmp::max(self.get_u64(U64Setting::RescanInterval(AddressState::from_num(idx as u8).unwrap())), 1);
 				let cmp_time = cur_time - Duration::from_secs(rescan_interval);
@@ -604,6 +615,7 @@ impl Store {
 				let mut new_nodes = state_nodes.split_off(split_point as usize);
 				mem::swap(&mut new_nodes, state_nodes);
 				for (_, node) in new_nodes.drain(..) {
+					nodes.nodes_to_state.get_mut(&node).unwrap().queued = false;
 					res.push((&node).into());
 				}
 			}
