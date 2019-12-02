@@ -486,7 +486,28 @@ impl Store {
 			let mut dns_buff = String::new();
 			{
 				let mut rng = thread_rng();
-				for i in &[1u64, 4, 5, 8, 9, 12, 13, 1024, 1025, 1028, 1029, 1032, 1033, 1036, 1037] {
+				for i in &[ 0b00000000001u64,
+				            0b00000000100,
+				            0b00000000101,
+				            0b00000001000,
+				            0b00000001001,
+				            0b00000001100,
+				            0b00000001101,
+				            0b00001001001,
+				            0b10000000000,
+				            0b10000000001,
+				            0b10000000100,
+				            0b10000000101,
+				            0b10000001000,
+				            0b10000001001,
+				            0b10000001100,
+				            0b10000001101,
+				            0b10001001000] {
+				//            ^ NODE_NETWORK_LIIMTED
+				//COMPACT_FILTERS ^   ^ NODE_BLOOM
+				//      NODE_WITNESS ^  ^ NODE_NETWORK
+				// We support all combos of NETWORK, NETWORK_LIMITED, BLOOM, and WITNESS
+				// We support COMPACT_FILTERS with WITNESS and NETWORK or NETWORK_LIIMTED.
 					let mut tor_set: Vec<Ipv6Addr> = Vec::new();
 					let mut v6_set: Vec<Ipv6Addr> = Vec::new();
 					let mut v4_set: Vec<Ipv4Addr> = Vec::new();
