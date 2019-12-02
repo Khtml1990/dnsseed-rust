@@ -170,12 +170,12 @@ impl SockAddr {
 }
 
 struct Nodes {
-	good_node_services: Vec<HashSet<SockAddr>>,
+	good_node_services: [HashSet<SockAddr>; 64],
 	nodes_to_state: HashMap<SockAddr, Node>,
 	state_next_scan: Vec<Vec<(Instant, SockAddr)>>,
 }
 struct NodesMutRef<'a> {
-	good_node_services: &'a mut Vec<HashSet<SockAddr>>,
+	good_node_services: &'a mut [HashSet<SockAddr>; 64],
 	nodes_to_state: &'a mut HashMap<SockAddr, Node>,
 	state_next_scan: &'a mut Vec<Vec<(Instant, SockAddr)>>,
 }
@@ -264,10 +264,7 @@ impl Store {
 				for _ in 0..AddressState::get_count() {
 					state_vecs.push(Vec::new());
 				}
-				let mut good_node_services = Vec::with_capacity(64);
-				for _ in 0..64 {
-					good_node_services.push(HashSet::new());
-				}
+				let good_node_services = [HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new()];
 				Nodes {
 					good_node_services,
 					nodes_to_state: HashMap::new(),
