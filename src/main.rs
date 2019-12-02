@@ -424,7 +424,7 @@ fn main() {
 	unsafe { REQUEST_BLOCK = Some(Box::new(Mutex::new(Arc::new((0, genesis_block(Network::Bitcoin).bitcoin_hash(), genesis_block(Network::Bitcoin)))))) };
 
 	let trt = tokio::runtime::Builder::new()
-		.blocking_threads(2).core_threads(num_cpus::get().max(1) * 3)
+		.blocking_threads(2).core_threads(num_cpus::get().max(1) * 2)
 		.build().unwrap();
 
 	let _ = trt.block_on_all(future::lazy(|| {
