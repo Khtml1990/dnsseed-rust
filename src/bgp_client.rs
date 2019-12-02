@@ -23,7 +23,8 @@ use crate::printer::{Printer, Stat};
 use crate::timeout_stream::TimeoutStream;
 
 const PATH_SUFFIX_LEN: usize = 3;
-struct Route {
+#[derive(Clone)]
+struct Route { // 32 bytes
 	path_suffix: [u32; PATH_SUFFIX_LEN],
 	path_len: u32,
 	pref: u32,
@@ -31,8 +32,8 @@ struct Route {
 }
 
 struct RoutingTable {
-	v4_table: HashMap<(Ipv4Addr, u8), HashMap<u32, Arc<Route>>>,
-	v6_table: HashMap<(Ipv6Addr, u8), HashMap<u32, Arc<Route>>>,
+	v4_table: HashMap<(Ipv4Addr, u8), HashMap<u32, Route>>,
+	v6_table: HashMap<(Ipv6Addr, u8), HashMap<u32, Route>>,
 }
 
 impl RoutingTable {
@@ -43,7 +44,7 @@ impl RoutingTable {
 		}
 	}
 
-	fn get_route_attrs(&self, ip: IpAddr) -> Vec<Arc<Route>> {
+	fn get_route_attrs(&self, ip: IpAddr) -> (u8, Vec<&Route>) {
 		macro_rules! lookup_res {
 			($addrty: ty, $addr: expr, $table: expr, $addr_bits: expr) => { {
 				//TODO: Optimize this (probably means making the tables btrees)!
@@ -56,11 +57,11 @@ impl RoutingTable {
 					let lookup_addr = <$addrty>::from(lookup);
 					if let Some(routes) = $table.get(&(lookup_addr, $addr_bits - i as u8)).map(|hm| hm.values()) {
 						if routes.len() > 0 {
-							return routes.map(|x| Arc::clone(&x)).collect();
+							return ($addr_bits - i as u8, routes.collect());
 						}
 					}
 				}
-				vec![]
+				(0, vec![])
 			} }
 		}
 		match ip {
@@ -89,7 +90,7 @@ impl RoutingTable {
 		};
 	}
 
-	fn announce(&mut self, prefix: NLRIEncoding, route: Arc<Route>) {
+	fn announce(&mut self, prefix: NLRIEncoding, route: Route) {
 		match prefix {
 			NLRIEncoding::IP(p) => {
 				let (ip, len) = <(IpAddr, u8)>::from(&p);
@@ -177,7 +178,8 @@ pub struct BGPClient {
 }
 impl BGPClient {
 	pub fn get_asn(&self, addr: IpAddr) -> u32 {
-		let mut path_vecs = self.routes.lock().unwrap().get_route_attrs(addr).clone();
+		let lock = self.routes.lock().unwrap();
+		let mut path_vecs = lock.get_route_attrs(addr).1;
 		if path_vecs.is_empty() { return 0; }
 
 		path_vecs.sort_unstable_by(|path_a, path_b| {
@@ -203,6 +205,21 @@ impl BGPClient {
 			}
 		}
 		0
+	}
+
+	pub fn get_path(&self, addr: IpAddr) -> (u8, [u32; PATH_SUFFIX_LEN]) {
+		let lock = self.routes.lock().unwrap();
+		let (prefixlen, mut path_vecs) = lock.get_route_attrs(addr);
+		if path_vecs.is_empty() { return (0, [0; PATH_SUFFIX_LEN]); }
+
+		path_vecs.sort_unstable_by(|path_a, path_b| {
+			path_a.pref.cmp(&path_b.pref)
+				.then(path_b.path_len.cmp(&path_a.path_len))
+				.then(path_b.med.cmp(&path_a.med))
+		});
+
+		let primary_route = path_vecs.pop().unwrap();
+		(prefixlen, primary_route.path_suffix)
 	}
 
 	pub fn disconnect(&self) {
@@ -302,9 +319,8 @@ impl BGPClient {
 									route_table.withdraw(r);
 								}
 								if let Some(path) = Self::map_attrs(upd.attributes) {
-									let path_arc = Arc::new(path);
 									for r in upd.announced_routes {
-										route_table.announce(r, Arc::clone(&path_arc));
+										route_table.announce(r, path.clone());
 									}
 								}
 								printer.set_stat(Stat::V4RoutingTableSize(route_table.v4_table.len()));
