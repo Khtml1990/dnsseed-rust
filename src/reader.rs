@@ -122,7 +122,7 @@ pub fn read(store: &'static Store, printer: &'static Printer, bgp_client: Arc<BG
 			},
 			"b" => {
 				let ip = try_parse_next_chunk!(IpAddr);
-				printer.add_line(format!("ASN for {} is {} ({:?})", ip, bgp_client.get_asn(ip), bgp_client.get_path(ip)), false);
+				printer.add_line(format!("ASN for {} is {} (prefixlen, path: {:?})", ip, bgp_client.get_asn(ip), bgp_client.get_path(ip)), false);
 			},
 			"r" => {
 				match AddressState::from_num(try_parse_next_chunk!(u8)) {
