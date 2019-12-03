@@ -19,6 +19,7 @@ use regex::Regex;
 use crate::bgp_client::BGPClient;
 
 pub const SECS_PER_SCAN_RESULTS: u64 = 15;
+const MAX_CONNS_PER_SEC_PER_STATUS: u64 = 30;
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 pub enum AddressState {
@@ -610,7 +611,8 @@ impl Store {
 			for (idx, state_nodes) in nodes.state_next_scan.iter_mut().enumerate() {
 				let rescan_interval = cmp::max(self.get_u64(U64Setting::RescanInterval(AddressState::from_num(idx as u8).unwrap())), 1);
 				let cmp_time = cur_time - Duration::from_secs(rescan_interval);
-				let split_point = cmp::min(SECS_PER_SCAN_RESULTS * state_nodes.len() as u64 / rescan_interval,
+				let split_point = cmp::min(cmp::min(SECS_PER_SCAN_RESULTS * state_nodes.len() as u64 / rescan_interval,
+							SECS_PER_SCAN_RESULTS * MAX_CONNS_PER_SEC_PER_STATUS),
 						state_nodes.binary_search_by(|a| a.0.cmp(&cmp_time)).unwrap_or_else(|idx| idx) as u64);
 				let mut new_nodes = state_nodes.split_off(split_point as usize);
 				mem::swap(&mut new_nodes, state_nodes);
