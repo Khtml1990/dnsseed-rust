@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::cmp;
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
@@ -22,14 +22,16 @@ use futures::sync::mpsc;
 use crate::printer::{Printer, Stat};
 use crate::timeout_stream::TimeoutStream;
 
-const PATH_SUFFIX_LEN: usize = 3;
+const PATH_SUFFIX_LEN: usize = 2;
 #[derive(Clone)]
-struct Route { // 32 bytes
+struct Route { // 32 bytes with a path id u32
 	path_suffix: [u32; PATH_SUFFIX_LEN],
 	path_len: u32,
 	pref: u32,
 	med: u32,
 }
+#[allow(dead_code)]
+const ROUTE_LEN: usize = 32 - std::mem::size_of::<(u32, Route)>();
 
 // To keep memory tight (and since we dont' need such close alignment), newtype the v4/v6 routing
 // table entries to make sure they are aligned to single bytes.
@@ -48,6 +50,10 @@ impl From<(Ipv4Addr, u8)> for V4Addr {
 		}
 	}
 }
+#[allow(dead_code)]
+const V4_ALIGN: usize = 1 - std::mem::align_of::<V4Addr>();
+#[allow(dead_code)]
+const V4_SIZE: usize = 5 - std::mem::size_of::<V4Addr>();
 
 #[repr(packed)]
 #[derive(PartialEq, Eq, Hash)]
@@ -63,10 +69,16 @@ impl From<(Ipv6Addr, u8)> for V6Addr {
 		}
 	}
 }
+#[allow(dead_code)]
+const V6_ALIGN: usize = 1 - std::mem::align_of::<V6Addr>();
+#[allow(dead_code)]
+const V6_SIZE: usize = 17 - std::mem::size_of::<V6Addr>();
 
 struct RoutingTable {
-	v4_table: HashMap<V4Addr, HashMap<u32, Route>>,
-	v6_table: HashMap<V6Addr, HashMap<u32, Route>>,
+	// We really want a HashMap for the values here, but they'll only ever contain a few entries,
+	// and Vecs are way more memory-effecient in that case.
+	v4_table: HashMap<V4Addr, Vec<(u32, Route)>>,
+	v6_table: HashMap<V6Addr, Vec<(u32, Route)>>,
 }
 
 impl RoutingTable {
@@ -83,9 +95,9 @@ impl RoutingTable {
 				//TODO: Optimize this (probably means making the tables btrees)!
 				let mut lookup = <$addrty>::from(($addr, $addr_bits));
 				for i in 0..$addr_bits {
-					if let Some(routes) = $table.get(&lookup).map(|hm| hm.values()) {
+					if let Some(routes) = $table.get(&lookup) {
 						if routes.len() > 0 {
-							return (lookup.pfxlen, routes.collect());
+							return (lookup.pfxlen, routes.iter().map(|v| &v.1).collect());
 						}
 					}
 					lookup.addr[lookup.addr.len() - (i/8) - 1] &= !(1u8 << (i % 8));
@@ -101,42 +113,62 @@ impl RoutingTable {
 	}
 
 	fn withdraw(&mut self, route: NLRIEncoding) {
+		macro_rules! remove {
+			($rt: expr, $v: expr, $id: expr) => { {
+				match $rt.entry($v.into()) {
+					hash_map::Entry::Occupied(mut entry) => {
+						entry.get_mut().retain(|e| e.0 != $id);
+						if entry.get_mut().is_empty() {
+							entry.remove();
+						}
+					},
+					_ => {},
+				}
+			} }
+		}
 		match route {
 			NLRIEncoding::IP(p) => {
 				let (ip, len) = <(IpAddr, u8)>::from(&p);
 				match ip {
-					IpAddr::V4(v4a) => self.v4_table.get_mut(&(v4a, len).into()).and_then(|hm| hm.remove(&0)),
-					IpAddr::V6(v6a) => self.v6_table.get_mut(&(v6a, len).into()).and_then(|hm| hm.remove(&0)),
+					IpAddr::V4(v4a) => remove!(self.v4_table, (v4a, len), 0),
+					IpAddr::V6(v6a) => remove!(self.v6_table, (v6a, len), 0),
 				}
 			},
 			NLRIEncoding::IP_WITH_PATH_ID((p, id)) => {
 				let (ip, len) = <(IpAddr, u8)>::from(&p);
 				match ip {
-					IpAddr::V4(v4a) => self.v4_table.get_mut(&(v4a, len).into()).and_then(|hm| hm.remove(&id)),
-					IpAddr::V6(v6a) => self.v6_table.get_mut(&(v6a, len).into()).and_then(|hm| hm.remove(&id)),
+					IpAddr::V4(v4a) => remove!(self.v4_table, (v4a, len), id),
+					IpAddr::V6(v6a) => remove!(self.v6_table, (v6a, len), id),
 				}
 			},
-			NLRIEncoding::IP_MPLS(_) => None,
+			NLRIEncoding::IP_MPLS(_) => (),
 		};
 	}
 
 	fn announce(&mut self, prefix: NLRIEncoding, route: Route) {
+		macro_rules! insert {
+			($rt: expr, $v: expr, $id: expr) => { {
+				let entry = $rt.entry($v.into()).or_insert(Vec::new());
+				entry.retain(|e| e.0 != $id);
+				entry.push(($id, route));
+			} }
+		}
 		match prefix {
 			NLRIEncoding::IP(p) => {
 				let (ip, len) = <(IpAddr, u8)>::from(&p);
 				match ip {
-					IpAddr::V4(v4a) => self.v4_table.entry((v4a, len).into()).or_insert(HashMap::new()).insert(0, route),
-					IpAddr::V6(v6a) => self.v6_table.entry((v6a, len).into()).or_insert(HashMap::new()).insert(0, route),
+					IpAddr::V4(v4a) => insert!(self.v4_table, (v4a, len), 0),
+					IpAddr::V6(v6a) => insert!(self.v6_table, (v6a, len), 0),
 				}
 			},
 			NLRIEncoding::IP_WITH_PATH_ID((p, id)) => {
 				let (ip, len) = <(IpAddr, u8)>::from(&p);
 				match ip {
-					IpAddr::V4(v4a) => self.v4_table.entry((v4a, len).into()).or_insert(HashMap::new()).insert(id, route),
-					IpAddr::V6(v6a) => self.v6_table.entry((v6a, len).into()).or_insert(HashMap::new()).insert(id, route),
+					IpAddr::V4(v4a) => insert!(self.v4_table, (v4a, len), id),
+					IpAddr::V6(v6a) => insert!(self.v6_table, (v6a, len), id),
 				}
 			},
-			NLRIEncoding::IP_MPLS(_) => None,
+			NLRIEncoding::IP_MPLS(_) => (),
 		};
 	}
 }
