@@ -31,9 +31,42 @@ struct Route { // 32 bytes
 	med: u32,
 }
 
+// To keep memory tight (and since we dont' need such close alignment), newtype the v4/v6 routing
+// table entries to make sure they are aligned to single bytes.
+
+#[repr(packed)]
+#[derive(PartialEq, Eq, Hash)]
+struct V4Addr {
+	addr: [u8; 4],
+	pfxlen: u8,
+}
+impl From<(Ipv4Addr, u8)> for V4Addr {
+	fn from(p: (Ipv4Addr, u8)) -> Self {
+		Self {
+			addr: p.0.octets(),
+			pfxlen: p.1,
+		}
+	}
+}
+
+#[repr(packed)]
+#[derive(PartialEq, Eq, Hash)]
+struct V6Addr {
+	addr: [u8; 16],
+	pfxlen: u8,
+}
+impl From<(Ipv6Addr, u8)> for V6Addr {
+	fn from(p: (Ipv6Addr, u8)) -> Self {
+		Self {
+			addr: p.0.octets(),
+			pfxlen: p.1,
+		}
+	}
+}
+
 struct RoutingTable {
-	v4_table: HashMap<(Ipv4Addr, u8), HashMap<u32, Route>>,
-	v6_table: HashMap<(Ipv6Addr, u8), HashMap<u32, Route>>,
+	v4_table: HashMap<V4Addr, HashMap<u32, Route>>,
+	v6_table: HashMap<V6Addr, HashMap<u32, Route>>,
 }
 
 impl RoutingTable {
@@ -48,22 +81,22 @@ impl RoutingTable {
 		macro_rules! lookup_res {
 			($addrty: ty, $addr: expr, $table: expr, $addr_bits: expr) => { {
 				//TODO: Optimize this (probably means making the tables btrees)!
-				let mut lookup = $addr.octets();
+				let mut lookup = <$addrty>::from(($addr, $addr_bits));
 				for i in 0..$addr_bits {
-					let lookup_addr = <$addrty>::from(lookup);
-					if let Some(routes) = $table.get(&(lookup_addr, $addr_bits - i as u8)).map(|hm| hm.values()) {
+					if let Some(routes) = $table.get(&lookup).map(|hm| hm.values()) {
 						if routes.len() > 0 {
-							return ($addr_bits - i as u8, routes.collect());
+							return (lookup.pfxlen, routes.collect());
 						}
 					}
-					lookup[lookup.len() - (i/8) - 1] &= !(1u8 << (i % 8));
+					lookup.addr[lookup.addr.len() - (i/8) - 1] &= !(1u8 << (i % 8));
+					lookup.pfxlen -= 1;
 				}
 				(0, vec![])
 			} }
 		}
 		match ip {
-			IpAddr::V4(v4a) => lookup_res!(Ipv4Addr, v4a, self.v4_table, 32),
-			IpAddr::V6(v6a) => lookup_res!(Ipv6Addr, v6a, self.v6_table, 128)
+			IpAddr::V4(v4a) => lookup_res!(V4Addr, v4a, self.v4_table, 32),
+			IpAddr::V6(v6a) => lookup_res!(V6Addr, v6a, self.v6_table, 128)
 		}
 	}
 
@@ -72,15 +105,15 @@ impl RoutingTable {
 			NLRIEncoding::IP(p) => {
 				let (ip, len) = <(IpAddr, u8)>::from(&p);
 				match ip {
-					IpAddr::V4(v4a) => self.v4_table.get_mut(&(v4a, len)).and_then(|hm| hm.remove(&0)),
-					IpAddr::V6(v6a) => self.v6_table.get_mut(&(v6a, len)).and_then(|hm| hm.remove(&0)),
+					IpAddr::V4(v4a) => self.v4_table.get_mut(&(v4a, len).into()).and_then(|hm| hm.remove(&0)),
+					IpAddr::V6(v6a) => self.v6_table.get_mut(&(v6a, len).into()).and_then(|hm| hm.remove(&0)),
 				}
 			},
 			NLRIEncoding::IP_WITH_PATH_ID((p, id)) => {
 				let (ip, len) = <(IpAddr, u8)>::from(&p);
 				match ip {
-					IpAddr::V4(v4a) => self.v4_table.get_mut(&(v4a, len)).and_then(|hm| hm.remove(&id)),
-					IpAddr::V6(v6a) => self.v6_table.get_mut(&(v6a, len)).and_then(|hm| hm.remove(&id)),
+					IpAddr::V4(v4a) => self.v4_table.get_mut(&(v4a, len).into()).and_then(|hm| hm.remove(&id)),
+					IpAddr::V6(v6a) => self.v6_table.get_mut(&(v6a, len).into()).and_then(|hm| hm.remove(&id)),
 				}
 			},
 			NLRIEncoding::IP_MPLS(_) => None,
@@ -92,15 +125,15 @@ impl RoutingTable {
 			NLRIEncoding::IP(p) => {
 				let (ip, len) = <(IpAddr, u8)>::from(&p);
 				match ip {
-					IpAddr::V4(v4a) => self.v4_table.entry((v4a, len)).or_insert(HashMap::new()).insert(0, route),
-					IpAddr::V6(v6a) => self.v6_table.entry((v6a, len)).or_insert(HashMap::new()).insert(0, route),
+					IpAddr::V4(v4a) => self.v4_table.entry((v4a, len).into()).or_insert(HashMap::new()).insert(0, route),
+					IpAddr::V6(v6a) => self.v6_table.entry((v6a, len).into()).or_insert(HashMap::new()).insert(0, route),
 				}
 			},
 			NLRIEncoding::IP_WITH_PATH_ID((p, id)) => {
 				let (ip, len) = <(IpAddr, u8)>::from(&p);
 				match ip {
-					IpAddr::V4(v4a) => self.v4_table.entry((v4a, len)).or_insert(HashMap::new()).insert(id, route),
-					IpAddr::V6(v6a) => self.v6_table.entry((v6a, len)).or_insert(HashMap::new()).insert(id, route),
+					IpAddr::V4(v4a) => self.v4_table.entry((v4a, len).into()).or_insert(HashMap::new()).insert(id, route),
+					IpAddr::V6(v6a) => self.v6_table.entry((v6a, len).into()).or_insert(HashMap::new()).insert(id, route),
 				}
 			},
 			NLRIEncoding::IP_MPLS(_) => None,
