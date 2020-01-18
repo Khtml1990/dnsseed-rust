@@ -355,13 +355,13 @@ impl BGPClient {
 						}));
 					let _ = sender.try_send(Message::Open(Open {
 						version: 4,
-						peer_asn: 23456,
+						peer_asn: 54415,
 						hold_timer: timeout.as_secs() as u16,
-						identifier: 0x453b1215, // 69.59.18.21
+						identifier: 0x6763aa29, // 103.99.170.41
 						parameters: vec![OpenParameter::Capabilities(vec![
 							OpenCapability::MultiProtocol((AFI::IPV4, SAFI::Unicast)),
 							OpenCapability::MultiProtocol((AFI::IPV6, SAFI::Unicast)),
-							OpenCapability::FourByteASN(397444),
+							OpenCapability::FourByteASN(54415),
 							OpenCapability::RouteRefresh,
 							OpenCapability::AddPath(vec![
 								(AFI::IPV4, SAFI::Unicast, AddPathDirection::ReceivePaths),
