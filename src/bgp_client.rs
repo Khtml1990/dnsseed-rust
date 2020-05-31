@@ -142,6 +142,10 @@ impl RoutingTable {
 				}
 			},
 			NLRIEncoding::IP_MPLS(_) => (),
+			NLRIEncoding::IP_MPLS_WITH_PATH_ID(_) => (),
+			NLRIEncoding::IP_VPN_MPLS(_) => (),
+			NLRIEncoding::L2VPN(_) => (),
+			NLRIEncoding::FLOWSPEC(_) => (),
 		};
 	}
 
@@ -169,6 +173,10 @@ impl RoutingTable {
 				}
 			},
 			NLRIEncoding::IP_MPLS(_) => (),
+			NLRIEncoding::IP_MPLS_WITH_PATH_ID(_) => (),
+			NLRIEncoding::IP_VPN_MPLS(_) => (),
+			NLRIEncoding::L2VPN(_) => (),
+			NLRIEncoding::FLOWSPEC(_) => (),
 		};
 	}
 }
@@ -196,8 +204,8 @@ impl<'a> std::io::Read for BytesDecoder<'a> {
 	}
 }
 
-struct MsgCoder<'a>(&'a Printer);
-impl<'a> codec::Decoder for MsgCoder<'a> {
+struct MsgCoder(Option<Capabilities>);
+impl codec::Decoder for MsgCoder {
 	type Item = Message;
 	type Error = std::io::Error;
 
@@ -206,13 +214,12 @@ impl<'a> codec::Decoder for MsgCoder<'a> {
 			buf: bytes,
 			pos: 0
 		};
-		match (Reader {
+		let def_cap = Default::default();
+		let mut reader = Reader {
 			stream: &mut decoder,
-			capabilities: Capabilities {
-				FOUR_OCTET_ASN_SUPPORT: true,
-				EXTENDED_PATH_NLRI_SUPPORT: true,
-			}
-		}).read() {
+			capabilities: if let Some(cap) = &self.0 { cap } else { &def_cap },
+		};
+		match reader.read() {
 			Ok((_header, msg)) => {
 				decoder.buf.advance(decoder.pos);
 				Ok(Some(msg))
@@ -224,12 +231,12 @@ impl<'a> codec::Decoder for MsgCoder<'a> {
 		}
 	}
 }
-impl<'a> codec::Encoder for MsgCoder<'a> {
+impl codec::Encoder for MsgCoder {
 	type Item = Message;
 	type Error = std::io::Error;
 
 	fn encode(&mut self, msg: Message, res: &mut bytes::BytesMut) -> Result<(), std::io::Error> {
-		msg.write(&mut BytesCoder(res))?;
+		msg.encode(&mut BytesCoder(res))?;
 		Ok(())
 	}
 }
@@ -340,7 +347,7 @@ impl BGPClient {
 						future::err(())
 					})
 				}).and_then(move |stream| {
-					let (write, read) = Framed::new(stream.0, MsgCoder(printer)).split();
+					let (write, read) = Framed::new(stream.0, MsgCoder(None)).split();
 					let (mut sender, receiver) = mpsc::channel(10); // We never really should send more than 10 messages unless they're dumb
 					tokio::spawn(write.sink_map_err(|_| { () }).send_all(receiver)
 						.then(|_| {
@@ -359,7 +366,7 @@ impl BGPClient {
 							OpenCapability::AddPath(vec![
 								(AFI::IPV4, SAFI::Unicast, AddPathDirection::ReceivePaths),
 								(AFI::IPV6, SAFI::Unicast, AddPathDirection::ReceivePaths)]),
-						])]
+						])],
 					}));
 					TimeoutStream::new_persistent(read, timeout).for_each(move |bgp_msg| {
 						if client.shutdown.load(Ordering::Relaxed) {
