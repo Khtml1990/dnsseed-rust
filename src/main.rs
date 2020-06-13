@@ -12,13 +12,12 @@ use std::sync::atomic::{Ordering, AtomicBool};
 use std::time::{Duration, Instant};
 use std::net::{SocketAddr, ToSocketAddrs};
 
-use bitcoin_hashes::sha256d;
-
 use bitcoin::blockdata::block::Block;
 use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::network::constants::Network;
+use bitcoin::hash_types::{BlockHash};
+use bitcoin::network::constants::{Network, ServiceFlags};
 use bitcoin::network::message::NetworkMessage;
-use bitcoin::network::message_blockdata::{GetHeadersMessage, Inventory, InvType};
+use bitcoin::network::message_blockdata::{GetHeadersMessage, Inventory};
 use bitcoin::util::hash::BitcoinHash;
 
 use printer::{Printer, Stat};
@@ -31,10 +30,10 @@ use bgp_client::BGPClient;
 use tokio::prelude::*;
 use tokio::timer::Delay;
 
-static mut REQUEST_BLOCK: Option<Box<Mutex<Arc<(u64, sha256d::Hash, Block)>>>> = None;
-static mut HIGHEST_HEADER: Option<Box<Mutex<(sha256d::Hash, u64)>>> = None;
-static mut HEADER_MAP: Option<Box<Mutex<HashMap<sha256d::Hash, u64>>>> = None;
-static mut HEIGHT_MAP: Option<Box<Mutex<HashMap<u64, sha256d::Hash>>>> = None;
+static mut REQUEST_BLOCK: Option<Box<Mutex<Arc<(u64, BlockHash, Block)>>>> = None;
+static mut HIGHEST_HEADER: Option<Box<Mutex<(BlockHash, u64)>>> = None;
+static mut HEADER_MAP: Option<Box<Mutex<HashMap<BlockHash, u64>>>> = None;
+static mut HEIGHT_MAP: Option<Box<Mutex<HashMap<u64, BlockHash>>>> = None;
 static mut DATA_STORE: Option<Box<Store>> = None;
 static mut PRINTER: Option<Box<Printer>> = None;
 static mut TOR_PROXY: Option<SocketAddr> = None;
@@ -42,7 +41,7 @@ pub static START_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 static SCANNING: AtomicBool = AtomicBool::new(false);
 
 struct PeerState {
-	request: Arc<(u64, sha256d::Hash, Block)>,
+	request: Arc<(u64, BlockHash, Block)>,
 	node_services: u64,
 	msg: (String, bool),
 	fail_reason: AddressState,
@@ -125,7 +124,7 @@ pub fn scan_node(scan_time: Instant, node: SocketAddr, manual: bool) {
 						state_lock.fail_reason = AddressState::LowVersion;
 						return future::err(());
 					}
-					if ver.services & (1 | (1 << 10)) == 0 {
+					if !ver.services.has(ServiceFlags::NETWORK) && !ver.services.has(ServiceFlags::NETWORK_LIMITED) {
 						state_lock.msg = (format!("({}: services {:x})", safe_ua, ver.services), true);
 						state_lock.fail_reason = AddressState::NotFullNode;
 						return future::err(());
@@ -136,7 +135,7 @@ pub fn scan_node(scan_time: Instant, node: SocketAddr, manual: bool) {
 						return future::err(());
 					}
 					check_set_flag!(recvd_version, "version");
-					state_lock.node_services = ver.services;
+					state_lock.node_services = ver.services.as_u64();
 					state_lock.msg = (format!("(subver: {})", safe_ua), false);
 					if let Err(_) = write.try_send(NetworkMessage::Verack) {
 						return future::err(());
@@ -173,10 +172,7 @@ pub fn scan_node(scan_time: Instant, node: SocketAddr, manual: bool) {
 					}
 					if addrs.len() > 10 {
 						if !state_lock.recvd_addrs {
-							if let Err(_) = write.try_send(NetworkMessage::GetData(vec![Inventory {
-								inv_type: InvType::WitnessBlock,
-								hash: state_lock.request.1,
-							}])) {
+							if let Err(_) = write.try_send(NetworkMessage::GetData(vec![Inventory::WitnessBlock(state_lock.request.1)])) {
 								return future::err(());
 							}
 						}
@@ -195,10 +191,13 @@ pub fn scan_node(scan_time: Instant, node: SocketAddr, manual: bool) {
 				},
 				Some(NetworkMessage::Inv(invs)) => {
 					for inv in invs {
-						if inv.inv_type == InvType::Transaction {
-							state_lock.fail_reason = AddressState::EvilNode;
-							state_lock.msg = ("due to unrequested inv tx".to_string(), true);
-							return future::err(());
+						match inv {
+							Inventory::Transaction(_) | Inventory::WitnessTransaction(_) => {
+								state_lock.fail_reason = AddressState::EvilNode;
+								state_lock.msg = ("due to unrequested inv tx".to_string(), true);
+								return future::err(());
+							}
+							_ => {},
 						}
 					}
 				},
@@ -359,10 +358,9 @@ fn make_trusted_conn(trusted_sockaddr: SocketAddr, bgp_client: Arc<BGPClient>) {
 						printer.set_stat(printer::Stat::HeaderCount(top_height));
 
 						if top_height >= starting_height as u64 {
-							if let Err(_) = trusted_write.try_send(NetworkMessage::GetData(vec![Inventory {
-								inv_type: InvType::WitnessBlock,
-								hash: height_map.get(&(top_height - 216)).unwrap().clone(),
-							}])) {
+							if let Err(_) = trusted_write.try_send(NetworkMessage::GetData(vec![
+									Inventory::WitnessBlock(height_map.get(&(top_height - 216)).unwrap().clone())
+							])) {
 								return future::err(());
 							}
 						}

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use bitcoin::consensus::encode;
 use bitcoin::consensus::encode::{Decodable, Encodable};
 use bitcoin::network::address::Address;
-use bitcoin::network::constants::Network;
+use bitcoin::network::constants::{Network, ServiceFlags};
 use bitcoin::network::message::{RawNetworkMessage, NetworkMessage};
 use bitcoin::network::message_network::VersionMessage;
 
@@ -198,10 +198,10 @@ impl Peer {
 					}));
 				let _ = sender.try_send(NetworkMessage::Version(VersionMessage {
 					version: 70015,
-					services: (1 << 3), // NODE_WITNESS
+					services: ServiceFlags::WITNESS,
 					timestamp: SystemTime::now().duration_since(UNIX_EPOCH).expect("time > 1970").as_secs() as i64,
-					receiver: Address::new(&addr, 0),
-					sender: Address::new(&"0.0.0.0:0".parse().unwrap(), 0),
+					receiver: Address::new(&addr, ServiceFlags::NONE),
+					sender: Address::new(&"0.0.0.0:0".parse().unwrap(), ServiceFlags::WITNESS),
 					nonce: 0xdeadbeef,
 					user_agent: "/rust-bitcoin:0.18/bluematt-tokio-client:0.1/".to_string(),
 					start_height: 0,
