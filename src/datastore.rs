@@ -580,16 +580,26 @@ impl Store {
 					}
 					let mut asn_set = HashSet::with_capacity(cmp::max(v4_set.len(), v6_set.len()));
 					asn_set.insert(0);
+					let default = 1u64;
 					for a in v4_set.iter().filter(|a| asn_set.insert(bgp_client.get_asn(IpAddr::V4(**a)))).choose_multiple(&mut rng, 21) {
-						dns_buff += &format!("x{:x}.dnsseed\tIN\tA\t{}\n", i, a);
+						if i == &default {
+							dns_buff += &format!("seed\tIN\tA\t{}\n", a);
+						}
+						dns_buff += &format!("x{:x}.seed\tIN\tA\t{}\n", i, a);
 					}
 					asn_set.clear();
 					asn_set.insert(0);
 					for a in v6_set.iter().filter(|a| asn_set.insert(bgp_client.get_asn(IpAddr::V6(**a)))).choose_multiple(&mut rng, 10) {
-						dns_buff += &format!("x{:x}.dnsseed\tIN\tAAAA\t{}\n", i, a);
+						if i == &default {
+							dns_buff += &format!("seed\tIN\tAAAA\t{}\n", a);
+						}
+						dns_buff += &format!("x{:x}.seed\tIN\tAAAA\t{}\n", i, a);
 					}
 					for a in tor_set.iter().choose_multiple(&mut rng, 2) {
-						dns_buff += &format!("x{:x}.dnsseed\tIN\tAAAA\t{}\n", i, a);
+						if i == &default {
+							dns_buff += &format!("seed\tIN\tAAAA\t{}\n", a);
+						}
+						dns_buff += &format!("x{:x}.seed\tIN\tAAAA\t{}\n", i, a);
 					}
 				}
 			}
