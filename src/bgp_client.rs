@@ -382,6 +382,7 @@ impl BGPClient {
 								let _ = sender.try_send(Message::KeepAlive);
 							},
 							Message::Update(mut upd) => {
+								let _ = sender.try_send(Message::KeepAlive);
 								upd.normalize();
 								let mut route_table = client.routes.lock().unwrap();
 								for r in upd.withdrawn_routes {
