@@ -145,7 +145,6 @@ impl RoutingTable {
 			NLRIEncoding::IP_MPLS_WITH_PATH_ID(_) => (),
 			NLRIEncoding::IP_VPN_MPLS(_) => (),
 			NLRIEncoding::L2VPN(_) => (),
-			NLRIEncoding::FLOWSPEC(_) => (),
 		};
 	}
 
@@ -176,7 +175,6 @@ impl RoutingTable {
 			NLRIEncoding::IP_MPLS_WITH_PATH_ID(_) => (),
 			NLRIEncoding::IP_VPN_MPLS(_) => (),
 			NLRIEncoding::L2VPN(_) => (),
-			NLRIEncoding::FLOWSPEC(_) => (),
 		};
 	}
 }
@@ -222,6 +220,9 @@ impl codec::Decoder for MsgCoder {
 		match reader.read() {
 			Ok((_header, msg)) => {
 				decoder.buf.advance(decoder.pos);
+				if let Message::Open(ref o) = &msg {
+					self.0 = Some(Capabilities::from_parameters(o.parameters.clone()));
+				}
 				Ok(Some(msg))
 			},
 			Err(e) => match e.kind() {
