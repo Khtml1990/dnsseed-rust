@@ -22,7 +22,7 @@ use futures::sync::mpsc;
 use crate::printer::{Printer, Stat};
 use crate::timeout_stream::TimeoutStream;
 
-const PATH_SUFFIX_LEN: usize = 2;
+const PATH_SUFFIX_LEN: usize = 3;
 #[derive(Clone)]
 struct Route { // 32 bytes with a path id u32
 	path_suffix: [u32; PATH_SUFFIX_LEN],
@@ -31,7 +31,7 @@ struct Route { // 32 bytes with a path id u32
 	med: u32,
 }
 #[allow(dead_code)]
-const ROUTE_LEN: usize = 32 - std::mem::size_of::<(u32, Route)>();
+const ROUTE_LEN: usize = 36 - std::mem::size_of::<(u32, Route)>();
 
 // To keep memory tight (and since we dont' need such close alignment), newtype the v4/v6 routing
 // table entries to make sure they are aligned to single bytes.
