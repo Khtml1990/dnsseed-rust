@@ -579,16 +579,16 @@ impl Store {
 					}
 					let mut asn_set = HashSet::with_capacity(cmp::max(v4_set.len(), v6_set.len()));
 					asn_set.insert(0);
-					for a in v4_set.iter().filter(|a| asn_set.insert(bgp_client.get_asn(IpAddr::V4(**a)))).choose_multiple(&mut rng, 21) {
-						dns_buff += &format!("x{:x}.dnsseed\tIN\tA\t{}\n", i, a);
+					for (a, asn) in v4_set.iter().map(|a| (a, bgp_client.get_asn(IpAddr::V4(*a)))).filter(|a| asn_set.insert(a.1)).choose_multiple(&mut rng, 21) {
+						dns_buff += &format!("x{:x}.dnsseed\tIN\tA\t{} ; AS{}\n", i, a, asn);
 					}
 					asn_set.clear();
 					asn_set.insert(0);
-					for a in v6_set.iter().filter(|a| asn_set.insert(bgp_client.get_asn(IpAddr::V6(**a)))).choose_multiple(&mut rng, 10) {
-						dns_buff += &format!("x{:x}.dnsseed\tIN\tAAAA\t{}\n", i, a);
+					for (a, asn) in v6_set.iter().map(|a| (a, bgp_client.get_asn(IpAddr::V6(*a)))).filter(|a| asn_set.insert(a.1)).choose_multiple(&mut rng, 10) {
+						dns_buff += &format!("x{:x}.dnsseed\tIN\tAAAA\t{} ; AS{}\n", i, a, asn);
 					}
 					for a in tor_set.iter().choose_multiple(&mut rng, 2) {
-						dns_buff += &format!("x{:x}.dnsseed\tIN\tAAAA\t{}\n", i, a);
+						dns_buff += &format!("x{:x}.dnsseed\tIN\tAAAA\t{} ; Tor Onionv2\n", i, a);
 					}
 				}
 			}
