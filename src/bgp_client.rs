@@ -79,6 +79,8 @@ struct RoutingTable {
 	// and Vecs are way more memory-effecient in that case.
 	v4_table: HashMap<V4Addr, Vec<(u32, Route)>>,
 	v6_table: HashMap<V6Addr, Vec<(u32, Route)>>,
+	max_paths: usize,
+	routes_with_max: usize,
 }
 
 impl RoutingTable {
@@ -86,6 +88,8 @@ impl RoutingTable {
 		Self {
 			v4_table: HashMap::with_capacity(900_000),
 			v6_table: HashMap::with_capacity(100_000),
+			max_paths: 0,
+			routes_with_max: 0,
 		}
 	}
 
@@ -117,6 +121,12 @@ impl RoutingTable {
 			($rt: expr, $v: expr, $id: expr) => { {
 				match $rt.entry($v.into()) {
 					hash_map::Entry::Occupied(mut entry) => {
+						if entry.get().len() == self.max_paths {
+							self.routes_with_max -= 1;
+							if self.routes_with_max == 0 {
+								self.max_paths = 0;
+							}
+						}
 						entry.get_mut().retain(|e| e.0 != $id);
 						if entry.get_mut().is_empty() {
 							entry.remove();
@@ -151,9 +161,22 @@ impl RoutingTable {
 	fn announce(&mut self, prefix: NLRIEncoding, route: Route) {
 		macro_rules! insert {
 			($rt: expr, $v: expr, $id: expr) => { {
-				let entry = $rt.entry($v.into()).or_insert(Vec::new());
+				let old_max_paths = self.max_paths;
+				let entry = $rt.entry($v.into()).or_insert_with(|| Vec::with_capacity(old_max_paths));
+				let entry_had_max = entry.len() == self.max_paths;
 				entry.retain(|e| e.0 != $id);
+				if entry_had_max {
+					entry.reserve_exact(1);
+				} else {
+					entry.reserve_exact(cmp::max(self.max_paths, entry.len() + 1) - entry.len());
+				}
 				entry.push(($id, route));
+				if entry.len() > self.max_paths {
+					self.max_paths = entry.len();
+					self.routes_with_max = 1;
+				} else if entry.len() == self.max_paths {
+					if !entry_had_max { self.routes_with_max += 1; }
+				}
 			} }
 		}
 		match prefix {
@@ -416,6 +439,7 @@ impl BGPClient {
 								}
 								printer.set_stat(Stat::V4RoutingTableSize(route_table.v4_table.len()));
 								printer.set_stat(Stat::V6RoutingTableSize(route_table.v6_table.len()));
+								printer.set_stat(Stat::RoutingTablePaths(route_table.max_paths));
 							},
 							_ => {}
 						}

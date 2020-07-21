@@ -13,6 +13,7 @@ pub enum Stat {
 	ConnectionClosed,
 	V4RoutingTableSize(usize),
 	V6RoutingTableSize(usize),
+	RoutingTablePaths(usize),
 }
 
 struct Stats {
@@ -21,6 +22,7 @@ struct Stats {
 	connection_count: u64,
 	v4_table_size: usize,
 	v6_table_size: usize,
+	paths: usize,
 }
 
 pub struct Printer {
@@ -35,6 +37,7 @@ impl Printer {
 			connection_count: 0,
 			v4_table_size: 0,
 			v6_table_size: 0,
+			paths: 0,
 		}));
 		let thread_arc = Arc::clone(&stats);
 		std::thread::spawn(move || {
@@ -88,8 +91,8 @@ impl Printer {
 					}
 
 					out.write_all(format!(
-							"\nBGP Routing Table: {} v4 paths, {} v6 paths\n",
-							stats.v4_table_size, stats.v6_table_size).as_bytes()).expect("stdout broken?");
+							"\nBGP Routing Table: {} v4 nets, {} v6 nets, {} max paths\n",
+							stats.v4_table_size, stats.v6_table_size, stats.paths).as_bytes()).expect("stdout broken?");
 
 					out.write_all(b"\nCommands:\n").expect("stdout broken?");
 					out.write_all(b"q: quit\n").expect("stdout broken?");
@@ -135,6 +138,7 @@ impl Printer {
 			Stat::ConnectionClosed => self.stats.lock().unwrap().connection_count -= 1,
 			Stat::V4RoutingTableSize(c) => self.stats.lock().unwrap().v4_table_size = c,
 			Stat::V6RoutingTableSize(c) => self.stats.lock().unwrap().v6_table_size = c,
+			Stat::RoutingTablePaths(c) => self.stats.lock().unwrap().paths = c,
 		}
 	}
 }
