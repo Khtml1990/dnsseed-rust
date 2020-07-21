@@ -84,6 +84,7 @@ static ALLOC: MemoryLimitingAllocator = MemoryLimitingAllocator;
 
 struct PeerState {
 	request: Arc<(u64, BlockHash, Block)>,
+	pong_nonce: u64,
 	node_services: u64,
 	msg: (String, bool),
 	fail_reason: AddressState,
@@ -92,7 +93,6 @@ struct PeerState {
 	recvd_pong: bool,
 	recvd_addrs: bool,
 	recvd_block: bool,
-	pong_nonce: u64,
 }
 
 pub fn scan_node(scan_time: Instant, node: SocketAddr, manual: bool) {
