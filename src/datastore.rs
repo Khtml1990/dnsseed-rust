@@ -174,12 +174,12 @@ impl SockAddr {
 struct Nodes {
 	good_node_services: [HashSet<SockAddr>; 64],
 	nodes_to_state: HashMap<SockAddr, Node>,
-	state_next_scan: Vec<Vec<(Instant, SockAddr)>>,
+	state_next_scan: Vec<Vec<SockAddr>>,
 }
 struct NodesMutRef<'a> {
 	good_node_services: &'a mut [HashSet<SockAddr>; 64],
 	nodes_to_state: &'a mut HashMap<SockAddr, Node>,
-	state_next_scan: &'a mut Vec<Vec<(Instant, SockAddr)>>,
+	state_next_scan: &'a mut Vec<Vec<SockAddr>>,
 }
 
 impl Nodes {
@@ -276,7 +276,6 @@ impl Store {
 		}
 
 		let nodes_future = File::open(store.clone() + "/nodes").and_then(|f| {
-			let start_time = Instant::now() - Duration::from_secs(60 * 60 * 24);
 			let mut res = nodes_uninitd!();
 			let l = BufReader::new(f).lines();
 			for line_res in l {
@@ -316,7 +315,7 @@ impl Store {
 						}
 					}
 				}
-				res.state_next_scan[node.state.to_num() as usize].push((start_time, sockaddr.into()));
+				res.state_next_scan[node.state.to_num() as usize].push(sockaddr.into());
 				res.nodes_to_state.insert(sockaddr.into(), node);
 			}
 			future::ok(res)
@@ -367,7 +366,7 @@ impl Store {
 						last_good: cur_time,
 						queued: true,
 					});
-					nodes.state_next_scan[AddressState::Untested.to_num() as usize].push((cur_time, addr.into()));
+					nodes.state_next_scan[AddressState::Untested.to_num() as usize].push(addr.into());
 					res += 1;
 				},
 				hash_map::Entry::Occupied(_) => {},
@@ -411,7 +410,7 @@ impl Store {
 			}
 			state_ref.last_services = 0;
 			if !state_ref.queued {
-				nodes.state_next_scan[AddressState::WasGood.to_num() as usize].push((now, addr));
+				nodes.state_next_scan[AddressState::WasGood.to_num() as usize].push(addr);
 				state_ref.queued = true;
 			}
 		} else {
@@ -428,7 +427,7 @@ impl Store {
 				state_ref.last_good = now;
 			}
 			if !state_ref.queued {
-				nodes.state_next_scan[state.to_num() as usize].push((now, addr));
+				nodes.state_next_scan[state.to_num() as usize].push(addr);
 				state_ref.queued = true;
 			}
 		}
@@ -603,20 +602,18 @@ impl Store {
 
 	pub fn get_next_scan_nodes(&self) -> Vec<SocketAddr> {
 		let mut res = Vec::with_capacity(128);
-		let cur_time = Instant::now();
 
 		{
 			let mut nodes_lock = self.nodes.write().unwrap();
 			let nodes = nodes_lock.borrow_mut();
 			for (idx, state_nodes) in nodes.state_next_scan.iter_mut().enumerate() {
 				let rescan_interval = cmp::max(self.get_u64(U64Setting::RescanInterval(AddressState::from_num(idx as u8).unwrap())), 1);
-				let cmp_time = cur_time - Duration::from_secs(rescan_interval);
 				let split_point = cmp::min(cmp::min(SECS_PER_SCAN_RESULTS * state_nodes.len() as u64 / rescan_interval,
 							SECS_PER_SCAN_RESULTS * MAX_CONNS_PER_SEC_PER_STATUS),
-						state_nodes.binary_search_by(|a| a.0.cmp(&cmp_time)).unwrap_or_else(|idx| idx) as u64);
+						state_nodes.len() as u64);
 				let mut new_nodes = state_nodes.split_off(split_point as usize);
 				mem::swap(&mut new_nodes, state_nodes);
-				for (_, node) in new_nodes.drain(..) {
+				for node in new_nodes.drain(..) {
 					nodes.nodes_to_state.get_mut(&node).unwrap().queued = false;
 					res.push((&node).into());
 				}
