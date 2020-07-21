@@ -84,8 +84,8 @@ struct RoutingTable {
 impl RoutingTable {
 	fn new() -> Self {
 		Self {
-			v4_table: HashMap::new(),
-			v6_table: HashMap::new(),
+			v4_table: HashMap::with_capacity(900_000),
+			v6_table: HashMap::with_capacity(100_000),
 		}
 	}
 
