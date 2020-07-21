@@ -259,14 +259,35 @@ impl BGPClient {
 		});
 
 		let primary_route = path_vecs.pop().unwrap();
-		'asn_candidates: for asn in primary_route.path_suffix.iter().rev() {
-			if *asn == 0 { continue 'asn_candidates; }
-			for secondary_route in path_vecs.iter() {
-				if !secondary_route.path_suffix.contains(asn) {
-					continue 'asn_candidates;
+		if path_vecs.len() > 3 {
+			// If we have at least 3 paths, try to find the last unique ASN which doesn't show up in other paths
+			// If we hit a T1 that is reasonably assumed to care about net neutrality, return the
+			// previous ASN.
+			let mut prev_asn = 0;
+			'asn_candidates: for asn in primary_route.path_suffix.iter().rev() {
+				if *asn == 0 { continue 'asn_candidates; }
+				match *asn {
+					// Included: CenturyLink (L3), Cogent, Telia, NTT, GTT, Level3,
+					//           GBLX (L3), Zayo, TI Sparkle Seabone, HE, Telefonica
+					// Left out from Caida top-20: TATA, PCCW, Vodafone, RETN, Orange, Telstra,
+					//                             Singtel, Rostelecom, DTAG
+					209|174|1299|2914|3257|3356|3549|6461|6762|6939|12956 if prev_asn != 0 => return prev_asn,
+					_ => if path_vecs.iter().any(|route| !route.path_suffix.contains(asn)) {
+						if prev_asn != 0 { return prev_asn } else {
+							// Multi-origin prefix, just give up and take the last AS in the
+							// default path
+							break 'asn_candidates;
+						}
+					} else {
+						// We only ever possibly return an ASN if it appears in all paths
+						prev_asn = *asn;
+					},
 				}
 			}
-			return *asn;
+			// All paths were the same, if the first ASN is non-0, return it.
+			if prev_asn != 0 {
+				return prev_asn;
+			}
 		}
 
 		for asn in primary_route.path_suffix.iter().rev() {
