@@ -470,7 +470,7 @@ impl Store {
 			let mut nodes_buff = String::new();
 			{
 				let nodes = self.nodes.read().unwrap();
-				nodes_buff.reserve(nodes.nodes_to_state.len() * 20);
+				nodes_buff.reserve(nodes.nodes_to_state.len() * 32);
 				for (ref sockaddr, ref node) in nodes.nodes_to_state.iter() {
 					nodes_buff += &sockaddr.to_string();
 					nodes_buff += ",";
