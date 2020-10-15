@@ -1,4 +1,4 @@
-use std::{cmp, mem};
+use std::cmp;
 use std::collections::{HashSet, HashMap, hash_map};
 use std::sync::{Arc, RwLock};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
@@ -608,9 +608,7 @@ impl Store {
 				let split_point = cmp::min(cmp::min(SECS_PER_SCAN_RESULTS * state_nodes.len() as u64 / rescan_interval,
 							SECS_PER_SCAN_RESULTS * MAX_CONNS_PER_SEC_PER_STATUS),
 						state_nodes.len() as u64);
-				let mut new_nodes = state_nodes.split_off(split_point as usize);
-				mem::swap(&mut new_nodes, state_nodes);
-				for node in new_nodes.drain(..) {
+				for node in state_nodes.drain(..split_point as usize) {
 					nodes.nodes_to_state.get_mut(&node).unwrap().queued = false;
 					res.push((&node).into());
 				}
