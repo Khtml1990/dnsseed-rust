@@ -174,12 +174,12 @@ impl SockAddr {
 struct Nodes {
 	good_node_services: [HashSet<SockAddr>; 64],
 	nodes_to_state: HashMap<SockAddr, Node>,
-	state_next_scan: Vec<Vec<SockAddr>>,
+	state_next_scan: [Vec<SockAddr>; AddressState::get_count() as usize],
 }
 struct NodesMutRef<'a> {
 	good_node_services: &'a mut [HashSet<SockAddr>; 64],
 	nodes_to_state: &'a mut HashMap<SockAddr, Node>,
-	state_next_scan: &'a mut Vec<Vec<SockAddr>>,
+	state_next_scan: &'a mut [Vec<SockAddr>; AddressState::get_count() as usize],
 }
 
 impl Nodes {
@@ -262,10 +262,7 @@ impl Store {
 
 		macro_rules! nodes_uninitd {
 			() => { {
-				let mut state_vecs = Vec::with_capacity(AddressState::get_count() as usize);
-				for _ in 0..AddressState::get_count() {
-					state_vecs.push(Vec::new());
-				}
+				let state_vecs = [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()];
 				let good_node_services = [HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new()];
 				Nodes {
 					good_node_services,
