@@ -5,7 +5,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV
 use std::time::{Duration, Instant};
 use std::io::{BufRead, BufReader};
 
-use bitcoin::network::address::Address;
+use bitcoin::network::address::{Address, AddrV2Message};
 
 use rand::thread_rng;
 use rand::seq::{SliceRandom, IteratorRandom};
@@ -374,6 +374,14 @@ impl Store {
 
 	pub fn add_fresh_nodes(&self, addresses: &Vec<(u32, Address)>) {
 		self.add_fresh_addrs(addresses.iter().filter_map(|(_, addr)| {
+			match addr.socket_addr() {
+				Ok(socketaddr) => Some(socketaddr),
+				Err(_) => None, // TODO: Handle onions
+			}
+		}));
+	}
+	pub fn add_fresh_nodes_v2(&self, addresses: &Vec<AddrV2Message>) {
+		self.add_fresh_addrs(addresses.iter().filter_map(|addr| {
 			match addr.socket_addr() {
 				Ok(socketaddr) => Some(socketaddr),
 				Err(_) => None, // TODO: Handle onions

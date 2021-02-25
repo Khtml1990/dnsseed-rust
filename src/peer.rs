@@ -67,13 +67,6 @@ impl<'a> codec::Decoder for MsgCoder<'a> {
 			},
 			Err(e) => match e {
 				encode::Error::Io(_) => Ok(None),
-				encode::Error::UnrecognizedNetworkCommand(ref msg) => {
-					decoder.buf.advance(decoder.pos);
-					//XXX(fixthese): self.0.add_line(format!("rust-bitcoin doesn't support {}!", msg), true);
-					if msg == "gnop" {
-						Err(e)
-					} else { Ok(Some(None)) }
-				},
 				_ => {
 					self.0.add_line(format!("Error decoding message: {:?}", e), true);
 					Err(e)
