@@ -1,8 +1,9 @@
 use std::cmp;
+use std::convert::TryInto;
 use std::collections::{HashSet, HashMap, hash_map};
 use std::sync::{Arc, RwLock};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use std::io::{BufRead, BufReader};
 
 use bitcoin::network::address::{Address, AddrV2Message};
@@ -121,11 +122,35 @@ pub enum RegexSetting {
 }
 
 struct Node {
-	last_update: Instant,
-	last_good: Instant, // Ignored unless state is Good or WasGood
-	last_services: u64,
+	// Times in seconds-since-startup
+	last_good: u32, // Ignored unless state is Good or WasGood
+	// Since everything is is 4-byte aligned, using a u64 for services blows up our size
+	// substantially. Instead, use a u32 pair and bit shift as needed.
+	last_services: (u32, u32),
 	state: AddressState,
 	queued: bool,
+}
+impl Node {
+	#[inline]
+	fn last_services(&self) -> u64 {
+		((self.last_services.0 as u64) << 32) |
+		((self.last_services.1 as u64)      )
+	}
+	#[inline]
+	fn services(inp: u64) -> (u32, u32) {
+		(
+			((inp & 0xffffffff00000000) >> 32) as u32,
+			((inp & 0x00000000ffffffff)      ) as u32
+		)
+	}
+}
+
+#[test]
+fn services_test() {
+	assert_eq!(
+		Node { last_good: 0, state: AddressState::Good, queued: false, last_services: Node::services(0x1badcafedeadbeef) }
+			.last_services(),
+		0x1badcafedeadbeef);
 }
 
 /// Essentially SocketAddr but without a traffic class or scope
@@ -200,6 +225,7 @@ pub struct Store {
 	u64_settings: RwLock<HashMap<U64Setting, u64>>,
 	subver_regex: RwLock<Arc<Regex>>,
 	nodes: RwLock<Nodes>,
+	start_time: Instant,
 	store: String,
 }
 
@@ -304,14 +330,13 @@ impl Store {
 						Some(v) => v,
 						None => return future::ok(res),
 					},
-					last_services,
-					last_update: Instant::now(),
-					last_good: Instant::now(),
+					last_services: Node::services(last_services),
+					last_good: 0,
 					queued: true,
 				};
 				if node.state == AddressState::Good {
 					for i in 0..64 {
-						if node.last_services & (1 << i) != 0 {
+						if node.last_services() & (1 << i) != 0 {
 							res.good_node_services[i].insert(sockaddr.into());
 						}
 					}
@@ -329,6 +354,7 @@ impl Store {
 				subver_regex: RwLock::new(Arc::new(regex)),
 				nodes: RwLock::new(nodes),
 				store,
+				start_time: Instant::now(),
 			})
 		})
 	}
@@ -355,15 +381,14 @@ impl Store {
 
 	pub fn add_fresh_addrs<I: Iterator<Item=SocketAddr>>(&self, addresses: I) -> u64 {
 		let mut res = 0;
+		let cur_time = (Instant::now() - self.start_time).as_secs().try_into().unwrap();
 		let mut nodes = self.nodes.write().unwrap();
-		let cur_time = Instant::now();
 		for addr in addresses {
 			match nodes.nodes_to_state.entry(addr.into()) {
 				hash_map::Entry::Vacant(e) => {
 					e.insert(Node {
 						state: AddressState::Untested,
-						last_services: 0,
-						last_update: cur_time,
+						last_services: (0, 0),
 						last_good: cur_time,
 						queued: true,
 					});
@@ -395,29 +420,31 @@ impl Store {
 
 	pub fn set_node_state(&self, sockaddr: SocketAddr, state: AddressState, services: u64) -> AddressState {
 		let addr: SockAddr = sockaddr.into();
-		let now = Instant::now();
+
+		let now = (Instant::now() - self.start_time).as_secs().try_into().unwrap();
 
 		let mut nodes_lock = self.nodes.write().unwrap();
 		let nodes = nodes_lock.borrow_mut();
 
 		let state_ref = nodes.nodes_to_state.entry(addr.clone()).or_insert(Node {
 			state: AddressState::Untested,
-			last_services: 0,
-			last_update: now,
+			last_services: (0, 0),
 			last_good: now,
 			queued: false,
 		});
 		let ret = state_ref.state;
+		let was_good_timeout: u32 = self.get_u64(U64Setting::WasGoodTimeout)
+			.try_into().expect("Need WasGood timeout that fits in a u32");
 		if (state_ref.state == AddressState::Good || state_ref.state == AddressState::WasGood)
 				&& state != AddressState::Good
-				&& state_ref.last_good >= now - Duration::from_secs(self.get_u64(U64Setting::WasGoodTimeout)) {
+				&& state_ref.last_good >= now - was_good_timeout {
 			state_ref.state = AddressState::WasGood;
 			for i in 0..64 {
-				if state_ref.last_services & (1 << i) != 0 {
+				if state_ref.last_services() & (1 << i) != 0 {
 					nodes.good_node_services[i].remove(&addr);
 				}
 			}
-			state_ref.last_services = 0;
+			state_ref.last_services = (0, 0);
 			if !state_ref.queued {
 				nodes.state_next_scan[AddressState::WasGood.to_num() as usize].push(addr);
 				state_ref.queued = true;
@@ -426,13 +453,13 @@ impl Store {
 			state_ref.state = state;
 			if state == AddressState::Good {
 				for i in 0..64 {
-					if services & (1 << i) != 0 && state_ref.last_services & (1 << i) == 0 {
+					if services & (1 << i) != 0 && state_ref.last_services() & (1 << i) == 0 {
 						nodes.good_node_services[i].insert(addr.clone());
-					} else if services & (1 << i) == 0 && state_ref.last_services & (1 << i) != 0 {
+					} else if services & (1 << i) == 0 && state_ref.last_services() & (1 << i) != 0 {
 						nodes.good_node_services[i].remove(&addr);
 					}
 				}
-				state_ref.last_services = services;
+				state_ref.last_services = Node::services(services);
 				state_ref.last_good = now;
 			}
 			if !state_ref.queued {
@@ -440,7 +467,6 @@ impl Store {
 				state_ref.queued = true;
 			}
 		}
-		state_ref.last_update = now;
 		ret
 	}
 
@@ -485,7 +511,7 @@ impl Store {
 					nodes_buff += ",";
 					nodes_buff += &node.state.to_num().to_string();
 					nodes_buff += ",";
-					nodes_buff += &node.last_services.to_string();
+					nodes_buff += &node.last_services().to_string();
 					nodes_buff += "\n";
 				}
 			}
