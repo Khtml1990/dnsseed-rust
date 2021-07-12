@@ -132,13 +132,17 @@ struct Node {
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum SockAddr {
 	V4(SocketAddrV4),
-	V6((Ipv6Addr, u16)),
+	V6(([u16; 8], u16)),
+}
+#[inline]
+fn segs_to_ip6(segs: &[u16; 8]) -> Ipv6Addr {
+	Ipv6Addr::new(segs[0], segs[1], segs[2], segs[3], segs[4], segs[5], segs[6], segs[7])
 }
 impl From<SocketAddr> for SockAddr {
 	fn from(addr: SocketAddr) -> SockAddr {
 		match addr {
 			SocketAddr::V4(sa) => SockAddr::V4(sa),
-			SocketAddr::V6(sa) => SockAddr::V6((sa.ip().clone(), sa.port())),
+			SocketAddr::V6(sa) => SockAddr::V6((sa.ip().segments(), sa.port())),
 		}
 	}
 }
@@ -146,7 +150,7 @@ impl Into<SocketAddr> for &SockAddr {
 	fn into(self) -> SocketAddr {
 		match self {
 			&SockAddr::V4(sa) => SocketAddr::V4(sa),
-			&SockAddr::V6(sa) => SocketAddr::V6(SocketAddrV6::new(sa.0, sa.1, 0, 0))
+			&SockAddr::V6(sa) => SocketAddr::V6(SocketAddrV6::new(segs_to_ip6(&sa.0), sa.1, 0, 0))
 		}
 	}
 }
@@ -166,7 +170,7 @@ impl SockAddr {
 	pub fn ip(&self) -> IpAddr {
 		match *self {
 			SockAddr::V4(sa) => IpAddr::V4(sa.ip().clone()),
-			SockAddr::V6((ip, _)) => IpAddr::V6(ip),
+			SockAddr::V6((ip, _)) => IpAddr::V6(segs_to_ip6(&ip)),
 		}
 	}
 }

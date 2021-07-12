@@ -10,7 +10,7 @@ bgp-rs = "0.6"
 tokio = "0.1"
 bytes = "0.4"
 futures = "0.1"
-rand = "0.6"
+rand = "0.8"
 regex = "1"
 num_cpus = "1"
 
