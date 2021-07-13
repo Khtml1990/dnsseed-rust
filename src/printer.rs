@@ -65,9 +65,14 @@ impl Printer {
 								store.get_node_count(AddressState::from_num(i).unwrap())
 								).as_bytes()).expect("stdout broken?");
 					}
+					let generations = store.get_bloom_node_count();
+					out.write_all(b"Bloom filter generations contain:").expect("stdout broken?");
+					for generation in &generations {
+						out.write_all(format!(" {}", generation).as_bytes()).expect("stdout broken?");
+					}
 
 					out.write_all(format!(
-							"\nCurrent connections open/in progress: {}\n", stats.connection_count).as_bytes()).expect("stdout broken?");
+							"\n\nCurrent connections open/in progress: {}\n", stats.connection_count).as_bytes()).expect("stdout broken?");
 					out.write_all(format!(
 							"Current block count: {}\n", stats.header_count).as_bytes()).expect("stdout broken?");
 
