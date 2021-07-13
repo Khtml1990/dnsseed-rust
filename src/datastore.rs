@@ -20,7 +20,7 @@ use regex::Regex;
 use crate::bgp_client::BGPClient;
 
 pub const SECS_PER_SCAN_RESULTS: u64 = 15;
-const MAX_CONNS_PER_SEC_PER_STATUS: u64 = 30;
+const MAX_CONNS_PER_SEC_PER_STATUS: u64 = 500;
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 pub enum AddressState {
@@ -444,7 +444,6 @@ impl Store {
 					nodes.good_node_services[i].remove(&addr);
 				}
 			}
-			state_ref.last_services = (0, 0);
 			if !state_ref.queued {
 				nodes.state_next_scan[AddressState::WasGood.to_num() as usize].push(addr);
 				state_ref.queued = true;
