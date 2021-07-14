@@ -13,14 +13,14 @@ const GENERATION_BITS: usize = 2;
 #[cfg(not(test))]
 const GENERATION_BITS: usize = 4;
 pub const GENERATION_COUNT: usize = (1 << GENERATION_BITS) - 1;
-const ELEMENTS_PER_BYTE: usize = 8 / GENERATION_BITS;
+const ELEMENTS_PER_VAR: usize = 64 / GENERATION_BITS;
 
 pub struct RollingBloomFilter<T: Hash> {
 	last_roll: Instant,
 	inserted_in_last_generations: [usize; GENERATION_COUNT - 1],
 	inserted_since_last_roll: usize,
 	current_generation: u8,
-	bits: Vec<u8>,
+	bits: Vec<u64>,
 	hash_keys: [RandomState; HASHES],
 	_entry_type: PhantomData<T>,
 }
@@ -28,7 +28,7 @@ pub struct RollingBloomFilter<T: Hash> {
 impl<T: Hash> RollingBloomFilter<T> {
 	pub fn new() -> Self {
 		let mut bits = Vec::new();
-		bits.resize(FILTER_SIZE * GENERATION_BITS / 8, 0);
+		bits.resize(FILTER_SIZE * GENERATION_BITS / 64, 0);
 		Self {
 			last_roll: Instant::now(),
 			inserted_since_last_roll: 0,
@@ -51,9 +51,9 @@ impl<T: Hash> RollingBloomFilter<T> {
 			item.hash(&mut hasher);
 			let idx = hasher.finish() as usize;
 
-			let byte = self.bits[(idx / ELEMENTS_PER_BYTE) % (FILTER_SIZE / 8)];
-			let bits_shift = (idx % ELEMENTS_PER_BYTE) * GENERATION_BITS;
-			let bits = (byte & ((GENERATION_COUNT as u8) << bits_shift)) >> bits_shift;
+			let byte = self.bits[(idx / ELEMENTS_PER_VAR) % (FILTER_SIZE / 64)];
+			let bits_shift = (idx % ELEMENTS_PER_VAR) * GENERATION_BITS;
+			let bits = (byte & ((GENERATION_COUNT as u64) << bits_shift)) >> bits_shift;
 			if bits == 0 { return false; }
 		}
 		true
@@ -73,14 +73,17 @@ impl<T: Hash> RollingBloomFilter<T> {
 			if self.current_generation == GENERATION_COUNT as u8 + 1 { self.current_generation = 1; }
 			let remove_generation = self.current_generation;
 
-			for idx in 0..FILTER_SIZE {
-				let byte = &mut self.bits[(idx / ELEMENTS_PER_BYTE) % (FILTER_SIZE / 8)];
-				let bits_shift = (idx % ELEMENTS_PER_BYTE) * GENERATION_BITS;
-				let bits = (*byte & ((GENERATION_COUNT as u8) << bits_shift)) >> bits_shift;
+			for idx in 0..(FILTER_SIZE / ELEMENTS_PER_VAR) {
+				let mut var = self.bits[idx];
+				for i in 0..ELEMENTS_PER_VAR {
+					let bits_shift = i * GENERATION_BITS;
+					let bits = (var & ((GENERATION_COUNT as u64) << bits_shift)) >> bits_shift;
 
-				if bits == remove_generation {
-					*byte &= !((GENERATION_COUNT as u8) << bits_shift);
+					if bits == remove_generation as u64 {
+						var &= !((GENERATION_COUNT as u64) << bits_shift);
+					}
 				}
+				self.bits[idx] = var;
 			}
 			self.last_roll = Instant::now();
 			let mut new_generations = [0; GENERATION_COUNT - 1];
@@ -95,10 +98,10 @@ impl<T: Hash> RollingBloomFilter<T> {
 			item.hash(&mut hasher);
 			let idx = hasher.finish() as usize;
 
-			let byte = &mut self.bits[(idx / ELEMENTS_PER_BYTE) % (FILTER_SIZE / 8)];
-			let bits_shift = (idx % ELEMENTS_PER_BYTE) * GENERATION_BITS;
-			*byte &= !((GENERATION_COUNT as u8) << bits_shift);
-			*byte |= self.current_generation << bits_shift;
+			let byte = &mut self.bits[(idx / ELEMENTS_PER_VAR) % (FILTER_SIZE / 64)];
+			let bits_shift = (idx % ELEMENTS_PER_VAR) * GENERATION_BITS;
+			*byte &= !((GENERATION_COUNT as u64) << bits_shift);
+			*byte |= (self.current_generation as u64) << bits_shift;
 		}
 		self.inserted_since_last_roll += 1;
 	}
