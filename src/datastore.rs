@@ -21,7 +21,7 @@ use crate::bloom::RollingBloomFilter;
 use crate::bgp_client::BGPClient;
 
 pub const SECS_PER_SCAN_RESULTS: u64 = 15;
-const MAX_CONNS_PER_SEC_PER_STATUS: u64 = 500;
+const MAX_CONNS_PER_SEC_PER_STATUS: u64 = 1000;
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 pub enum AddressState {
@@ -275,14 +275,14 @@ impl Store {
 			let mut u64s = HashMap::with_capacity(15);
 			u64s.insert(U64Setting::RunTimeout, 120);
 			u64s.insert(U64Setting::WasGoodTimeout, 21600);
-			u64s.insert(U64Setting::RescanInterval(AddressState::Untested), 1);
+			u64s.insert(U64Setting::RescanInterval(AddressState::Untested), 3600);
 			u64s.insert(U64Setting::RescanInterval(AddressState::LowBlockCount), 3600);
 			u64s.insert(U64Setting::RescanInterval(AddressState::HighBlockCount), 7200);
 			u64s.insert(U64Setting::RescanInterval(AddressState::LowVersion), 21600);
 			u64s.insert(U64Setting::RescanInterval(AddressState::BadVersion), 21600);
 			u64s.insert(U64Setting::RescanInterval(AddressState::NotFullNode), 86400);
 			u64s.insert(U64Setting::RescanInterval(AddressState::ProtocolViolation), 86400);
-			u64s.insert(U64Setting::RescanInterval(AddressState::Timeout), 86400);
+			u64s.insert(U64Setting::RescanInterval(AddressState::Timeout), 604800);
 			u64s.insert(U64Setting::RescanInterval(AddressState::TimeoutDuringRequest), 21600);
 			u64s.insert(U64Setting::RescanInterval(AddressState::TimeoutAwaitingPong), 3600);
 			u64s.insert(U64Setting::RescanInterval(AddressState::TimeoutAwaitingAddr), 1800);
