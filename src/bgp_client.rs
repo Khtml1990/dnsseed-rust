@@ -22,7 +22,7 @@ use futures::sync::mpsc;
 use crate::printer::{Printer, Stat};
 use crate::timeout_stream::TimeoutStream;
 
-const PATH_SUFFIX_LEN: usize = 2;
+const PATH_SUFFIX_LEN: usize = 3;
 #[derive(Clone)]
 struct Route { // 32 bytes with a path id u32
 	path_suffix: [u32; PATH_SUFFIX_LEN],
@@ -31,7 +31,7 @@ struct Route { // 32 bytes with a path id u32
 	med: u32,
 }
 #[allow(dead_code)]
-const ROUTE_LEN: usize = 32 - std::mem::size_of::<(u32, Route)>();
+const ROUTE_LEN: usize = 36 - std::mem::size_of::<(u32, Route)>();
 
 // To keep memory tight (and since we dont' need such close alignment), newtype the v4/v6 routing
 // table entries to make sure they are aligned to single bytes.
@@ -79,13 +79,17 @@ struct RoutingTable {
 	// and Vecs are way more memory-effecient in that case.
 	v4_table: HashMap<V4Addr, Vec<(u32, Route)>>,
 	v6_table: HashMap<V6Addr, Vec<(u32, Route)>>,
+	max_paths: usize,
+	routes_with_max: usize,
 }
 
 impl RoutingTable {
 	fn new() -> Self {
 		Self {
-			v4_table: HashMap::new(),
-			v6_table: HashMap::new(),
+			v4_table: HashMap::with_capacity(900_000),
+			v6_table: HashMap::with_capacity(100_000),
+			max_paths: 0,
+			routes_with_max: 0,
 		}
 	}
 
@@ -117,6 +121,12 @@ impl RoutingTable {
 			($rt: expr, $v: expr, $id: expr) => { {
 				match $rt.entry($v.into()) {
 					hash_map::Entry::Occupied(mut entry) => {
+						if entry.get().len() == self.max_paths {
+							self.routes_with_max -= 1;
+							if self.routes_with_max == 0 {
+								self.max_paths = 0;
+							}
+						}
 						entry.get_mut().retain(|e| e.0 != $id);
 						if entry.get_mut().is_empty() {
 							entry.remove();
@@ -145,16 +155,28 @@ impl RoutingTable {
 			NLRIEncoding::IP_MPLS_WITH_PATH_ID(_) => (),
 			NLRIEncoding::IP_VPN_MPLS(_) => (),
 			NLRIEncoding::L2VPN(_) => (),
-			NLRIEncoding::FLOWSPEC(_) => (),
 		};
 	}
 
 	fn announce(&mut self, prefix: NLRIEncoding, route: Route) {
 		macro_rules! insert {
 			($rt: expr, $v: expr, $id: expr) => { {
-				let entry = $rt.entry($v.into()).or_insert(Vec::new());
+				let old_max_paths = self.max_paths;
+				let entry = $rt.entry($v.into()).or_insert_with(|| Vec::with_capacity(old_max_paths));
+				let entry_had_max = entry.len() == self.max_paths;
 				entry.retain(|e| e.0 != $id);
+				if entry_had_max {
+					entry.reserve_exact(1);
+				} else {
+					entry.reserve_exact(cmp::max(self.max_paths, entry.len() + 1) - entry.len());
+				}
 				entry.push(($id, route));
+				if entry.len() > self.max_paths {
+					self.max_paths = entry.len();
+					self.routes_with_max = 1;
+				} else if entry.len() == self.max_paths {
+					if !entry_had_max { self.routes_with_max += 1; }
+				}
 			} }
 		}
 		match prefix {
@@ -176,7 +198,6 @@ impl RoutingTable {
 			NLRIEncoding::IP_MPLS_WITH_PATH_ID(_) => (),
 			NLRIEncoding::IP_VPN_MPLS(_) => (),
 			NLRIEncoding::L2VPN(_) => (),
-			NLRIEncoding::FLOWSPEC(_) => (),
 		};
 	}
 }
@@ -222,6 +243,9 @@ impl codec::Decoder for MsgCoder {
 		match reader.read() {
 			Ok((_header, msg)) => {
 				decoder.buf.advance(decoder.pos);
+				if let Message::Open(ref o) = &msg {
+					self.0 = Some(Capabilities::from_parameters(o.parameters.clone()));
+				}
 				Ok(Some(msg))
 			},
 			Err(e) => match e.kind() {
@@ -258,14 +282,35 @@ impl BGPClient {
 		});
 
 		let primary_route = path_vecs.pop().unwrap();
-		'asn_candidates: for asn in primary_route.path_suffix.iter().rev() {
-			if *asn == 0 { continue 'asn_candidates; }
-			for secondary_route in path_vecs.iter() {
-				if !secondary_route.path_suffix.contains(asn) {
-					continue 'asn_candidates;
+		if path_vecs.len() > 3 {
+			// If we have at least 3 paths, try to find the last unique ASN which doesn't show up in other paths
+			// If we hit a T1 that is reasonably assumed to care about net neutrality, return the
+			// previous ASN.
+			let mut prev_asn = 0;
+			'asn_candidates: for asn in primary_route.path_suffix.iter().rev() {
+				if *asn == 0 { continue 'asn_candidates; }
+				match *asn {
+					// Included: CenturyLink (L3), Cogent, Telia, NTT, GTT, Level3,
+					//           GBLX (L3), Zayo, TI Sparkle Seabone, HE, Telefonica
+					// Left out from Caida top-20: TATA, PCCW, Vodafone, RETN, Orange, Telstra,
+					//                             Singtel, Rostelecom, DTAG
+					209|174|1299|2914|3257|3356|3549|6461|6762|6939|12956 if prev_asn != 0 => return prev_asn,
+					_ => if path_vecs.iter().any(|route| !route.path_suffix.contains(asn)) {
+						if prev_asn != 0 { return prev_asn } else {
+							// Multi-origin prefix, just give up and take the last AS in the
+							// default path
+							break 'asn_candidates;
+						}
+					} else {
+						// We only ever possibly return an ASN if it appears in all paths
+						prev_asn = *asn;
+					},
 				}
 			}
-			return *asn;
+			// All paths were the same, if the first ASN is non-0, return it.
+			if prev_asn != 0 {
+				return prev_asn;
+			}
 		}
 
 		for asn in primary_route.path_suffix.iter().rev() {
@@ -395,6 +440,7 @@ impl BGPClient {
 								}
 								printer.set_stat(Stat::V4RoutingTableSize(route_table.v4_table.len()));
 								printer.set_stat(Stat::V6RoutingTableSize(route_table.v6_table.len()));
+								printer.set_stat(Stat::RoutingTablePaths(route_table.max_paths));
 							},
 							_ => {}
 						}

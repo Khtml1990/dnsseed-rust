@@ -5,12 +5,12 @@ authors = ["matt"]
 edition = "2018"
 
 [dependencies]
-bitcoin = "0.23"
-bgp-rs = { git = "https://github.com/TheBlueMatt/bgp-rs", rev = "96bd15e67789b91f679f835fc62ff3beb16685bf" }
+bitcoin = "0.26"
+bgp-rs = "0.6"
 tokio = "0.1"
 bytes = "0.4"
 futures = "0.1"
-rand = "0.6"
+rand = "0.8"
 regex = "1"
 num_cpus = "1"
 

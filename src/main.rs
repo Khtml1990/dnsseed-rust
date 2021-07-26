@@ -1,3 +1,4 @@
+mod bloom;
 mod printer;
 mod reader;
 mod peer;
@@ -18,7 +19,7 @@ use bitcoin::hash_types::{BlockHash};
 use bitcoin::network::constants::{Network, ServiceFlags};
 use bitcoin::network::message::NetworkMessage;
 use bitcoin::network::message_blockdata::{GetHeadersMessage, Inventory};
-use bitcoin::util::hash::BitcoinHash;
+//use bitcoin::util::hash::BitcoinHash;
 
 use printer::{Printer, Stat};
 use peer::Peer;
@@ -40,8 +41,51 @@ static mut TOR_PROXY: Option<SocketAddr> = None;
 pub static START_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 static SCANNING: AtomicBool = AtomicBool::new(false);
 
+
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::ptr;
+use std::sync::atomic::AtomicUsize;
+
+// We keep track of all memory allocated by Rust code, refusing new allocations if it exceeds
+// 1.75GB.
+//
+// Note that while Rust's std, in general, should panic in response to a null allocation, it
+// is totally conceivable that some code will instead dereference this null pointer, which
+// would violate our guarantees that Rust modules should never crash the entire application.
+//
+// In the future, as upstream Rust explores a safer allocation API (eg the Alloc API which
+// returns Results instead of raw pointers, or redefining the GlobalAlloc API to allow
+// panic!()s inside of alloc calls), we should switch to those, however these APIs are
+// currently unstable.
+const TOTAL_MEM_LIMIT_BYTES: usize = (1024 + 756) * 1024 * 1024;
+static TOTAL_MEM_ALLOCD: AtomicUsize = AtomicUsize::new(0);
+struct MemoryLimitingAllocator;
+unsafe impl GlobalAlloc for MemoryLimitingAllocator {
+	unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+		let len = layout.size();
+		if len > TOTAL_MEM_LIMIT_BYTES {
+			return ptr::null_mut();
+		}
+		if TOTAL_MEM_ALLOCD.fetch_add(len, Ordering::AcqRel) + len > TOTAL_MEM_LIMIT_BYTES {
+			TOTAL_MEM_ALLOCD.fetch_sub(len, Ordering::AcqRel);
+			return ptr::null_mut();
+		}
+		System.alloc(layout)
+	}
+
+	unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+		System.dealloc(ptr, layout);
+		TOTAL_MEM_ALLOCD.fetch_sub(layout.size(), Ordering::AcqRel);
+	}
+}
+
+#[global_allocator]
+static ALLOC: MemoryLimitingAllocator = MemoryLimitingAllocator;
+
+
 struct PeerState {
 	request: Arc<(u64, BlockHash, Block)>,
+	pong_nonce: u64,
 	node_services: u64,
 	msg: (String, bool),
 	fail_reason: AddressState,
@@ -50,7 +94,6 @@ struct PeerState {
 	recvd_pong: bool,
 	recvd_addrs: bool,
 	recvd_block: bool,
-	pong_nonce: u64,
 }
 
 pub fn scan_node(scan_time: Instant, node: SocketAddr, manual: bool) {
@@ -80,19 +123,8 @@ pub fn scan_node(scan_time: Instant, node: SocketAddr, manual: bool) {
 		Peer::new(node.clone(), unsafe { TOR_PROXY.as_ref().unwrap() }, Duration::from_secs(timeout), printer)
 	});
 	tokio::spawn(peer.and_then(move |(mut write, read)| {
-		TimeoutStream::new_timeout(read, scan_time + Duration::from_secs(store.get_u64(U64Setting::RunTimeout))).map_err(move |err| {
-			match err {
-				bitcoin::consensus::encode::Error::UnrecognizedNetworkCommand(ref msg) => {
-					// If we got here, we hit one of the explicitly disallowed messages indicating
-					// a bogus "node".
-					let mut state_lock = err_peer_state.lock().unwrap();
-					state_lock.msg = (format!("(bad msg type {})", msg), true);
-					state_lock.fail_reason = AddressState::EvilNode;
-				},
-				_ => {},
-			}
-			()
-		}).for_each(move |msg| {
+		TimeoutStream::new_timeout(read, scan_time + Duration::from_secs(store.get_u64(U64Setting::RunTimeout)))
+			.map_err(|_| ()).for_each(move |msg| {
 			let mut state_lock = peer_state.lock().unwrap();
 			macro_rules! check_set_flag {
 				($recvd_flag: ident, $msg: expr) => { {
@@ -137,6 +169,9 @@ pub fn scan_node(scan_time: Instant, node: SocketAddr, manual: bool) {
 					check_set_flag!(recvd_version, "version");
 					state_lock.node_services = ver.services.as_u64();
 					state_lock.msg = (format!("(subver: {})", safe_ua), false);
+					if let Err(_) = write.try_send(NetworkMessage::SendAddrV2) {
+						return future::err(());
+					}
 					if let Err(_) = write.try_send(NetworkMessage::Verack) {
 						return future::err(());
 					}
@@ -180,6 +215,23 @@ pub fn scan_node(scan_time: Instant, node: SocketAddr, manual: bool) {
 					}
 					unsafe { DATA_STORE.as_ref().unwrap() }.add_fresh_nodes(&addrs);
 				},
+				Some(NetworkMessage::AddrV2(addrs)) => {
+					if addrs.len() > 1000 {
+						state_lock.fail_reason = AddressState::ProtocolViolation;
+						state_lock.msg = (format!("due to oversized addr: {}", addrs.len()), true);
+						state_lock.recvd_addrs = false;
+						return future::err(());
+					}
+					if addrs.len() > 10 {
+						if !state_lock.recvd_addrs {
+							if let Err(_) = write.try_send(NetworkMessage::GetData(vec![Inventory::WitnessBlock(state_lock.request.1)])) {
+								return future::err(());
+							}
+						}
+						state_lock.recvd_addrs = true;
+					}
+					unsafe { DATA_STORE.as_ref().unwrap() }.add_fresh_nodes_v2(&addrs);
+				},
 				Some(NetworkMessage::Block(block)) => {
 					if block != state_lock.request.2 {
 						state_lock.fail_reason = AddressState::ProtocolViolation;
@@ -205,6 +257,14 @@ pub fn scan_node(scan_time: Instant, node: SocketAddr, manual: bool) {
 					state_lock.fail_reason = AddressState::EvilNode;
 					state_lock.msg = ("due to unrequested transaction".to_string(), true);
 					return future::err(());
+				},
+				Some(NetworkMessage::Unknown { command, .. }) => {
+					if command.as_ref() == "gnop" {
+						let mut state_lock = err_peer_state.lock().unwrap();
+						state_lock.msg = (format!("(bad msg type {})", command), true);
+						state_lock.fail_reason = AddressState::EvilNode;
+						return future::err(());
+					}
 				},
 				_ => {},
 			}
@@ -344,17 +404,17 @@ fn make_trusted_conn(trusted_sockaddr: SocketAddr, bgp_client: Arc<BGPClient>) {
 
 					if let Some(height) = header_map.get(&headers[0].prev_blockhash).cloned() {
 						for i in 0..headers.len() {
-							let hash = headers[i].bitcoin_hash();
+							let hash = headers[i].block_hash();
 							if i < headers.len() - 1 && headers[i + 1].prev_blockhash != hash {
 								return future::err(());
 							}
-							header_map.insert(headers[i].bitcoin_hash(), height + 1 + (i as u64));
-							height_map.insert(height + 1 + (i as u64), headers[i].bitcoin_hash());
+							header_map.insert(headers[i].block_hash(), height + 1 + (i as u64));
+							height_map.insert(height + 1 + (i as u64), headers[i].block_hash());
 						}
 
 						let top_height = height + headers.len() as u64;
 						*unsafe { HIGHEST_HEADER.as_ref().unwrap() }.lock().unwrap()
-							= (headers.last().unwrap().bitcoin_hash(), top_height);
+							= (headers.last().unwrap().block_hash(), top_height);
 						printer.set_stat(printer::Stat::HeaderCount(top_height));
 
 						if top_height >= starting_height as u64 {
@@ -377,7 +437,7 @@ fn make_trusted_conn(trusted_sockaddr: SocketAddr, bgp_client: Arc<BGPClient>) {
 					}
 				},
 				Some(NetworkMessage::Block(block)) => {
-					let hash = block.header.bitcoin_hash();
+					let hash = block.block_hash();
 					let header_map = unsafe { HEADER_MAP.as_ref().unwrap() }.lock().unwrap();
 					let height = *header_map.get(&hash).expect("Got loose block from trusted peer we coulnd't have requested");
 					if height == unsafe { HIGHEST_HEADER.as_ref().unwrap() }.lock().unwrap().1 - 216 {
@@ -416,13 +476,13 @@ fn main() {
 
 	unsafe { HEADER_MAP = Some(Box::new(Mutex::new(HashMap::with_capacity(600000)))) };
 	unsafe { HEIGHT_MAP = Some(Box::new(Mutex::new(HashMap::with_capacity(600000)))) };
-	unsafe { HEADER_MAP.as_ref().unwrap() }.lock().unwrap().insert(genesis_block(Network::Bitcoin).bitcoin_hash(), 0);
-	unsafe { HEIGHT_MAP.as_ref().unwrap() }.lock().unwrap().insert(0, genesis_block(Network::Bitcoin).bitcoin_hash());
-	unsafe { HIGHEST_HEADER = Some(Box::new(Mutex::new((genesis_block(Network::Bitcoin).bitcoin_hash(), 0)))) };
-	unsafe { REQUEST_BLOCK = Some(Box::new(Mutex::new(Arc::new((0, genesis_block(Network::Bitcoin).bitcoin_hash(), genesis_block(Network::Bitcoin)))))) };
+	unsafe { HEADER_MAP.as_ref().unwrap() }.lock().unwrap().insert(genesis_block(Network::Bitcoin).block_hash(), 0);
+	unsafe { HEIGHT_MAP.as_ref().unwrap() }.lock().unwrap().insert(0, genesis_block(Network::Bitcoin).block_hash());
+	unsafe { HIGHEST_HEADER = Some(Box::new(Mutex::new((genesis_block(Network::Bitcoin).block_hash(), 0)))) };
+	unsafe { REQUEST_BLOCK = Some(Box::new(Mutex::new(Arc::new((0, genesis_block(Network::Bitcoin).block_hash(), genesis_block(Network::Bitcoin)))))) };
 
 	let trt = tokio::runtime::Builder::new()
-		.blocking_threads(2).core_threads(num_cpus::get().max(1) * 2)
+		.blocking_threads(2).core_threads(num_cpus::get().max(1) + 1)
 		.build().unwrap();
 
 	let _ = trt.block_on_all(future::lazy(|| {
